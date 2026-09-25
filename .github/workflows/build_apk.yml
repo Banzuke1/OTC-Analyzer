@@ -21,11 +21,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git zip unzip openjdk-17-jdk \
+            git zip unzip \
             autoconf libtool pkg-config \
             zlib1g-dev libncurses-dev libtinfo6 \
             cmake libffi-dev libssl-dev \
@@ -36,12 +39,10 @@ jobs:
           pip install --upgrade pip
           pip install --upgrade buildozer cython==0.29.33
 
-      - name: Pre-accept Android SDK licenses
+      - name: Point buildozer to installed SDK
         run: |
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
-          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license"
-          echo "84831b9409646a918e30573bab4c9c91346d8abd" >> "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license"
-          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" > "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license"
+          mkdir -p "$HOME/.buildozer/android/platform"
+          ln -s "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
 
       - name: Build APK
         run: |
