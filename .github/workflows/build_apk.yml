@@ -5,13 +5,17 @@ on:
   push:
     branches: [ main ]
 
+env:
+  PYTHONFORANDROID_PREREQUISITES_INSTALL_INTERACTIVE: 0
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -21,40 +25,23 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools platforms;android-33 build-tools;33.0.2"
-
-      - name: Install system dependencies
+      - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip \
-            autoconf libtool pkg-config \
-            zlib1g-dev libncurses-dev libtinfo6 \
-            cmake libffi-dev libssl-dev \
-            build-essential ccache libltdl-dev
+          sudo apt-get install -y automake libltdl-dev
 
-      - name: Install buildozer
+      - name: Install Buildozer
         run: |
           pip install --upgrade pip
-          pip install --upgrade buildozer cython==0.29.33
-
-      - name: Point buildozer to installed SDK
-        run: |
-          mkdir -p "$HOME/.buildozer/android/platform"
-          ln -s "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
-          rm -rf "$HOME/.buildozer/android/platform/android-sdk/tools"
-          ln -s "$ANDROID_HOME/cmdline-tools/latest" "$HOME/.buildozer/android/platform/android-sdk/tools"
-          sudo chmod -R a+rwX "$ANDROID_HOME"
+          pip install buildozer cython==0.29.37
 
       - name: Build APK
         run: |
-          buildozer -v android debug
+          buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OTC-Analyzer-APK
           path: bin/*.apk
+          if-no-files-found: error
