@@ -1,0 +1,139 @@
+import os, csv, time, math, random
+from collections import deque
+from kivy.app import App
+from kivy.clock import Clock
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.spinner import Spinner
+from kivy.uix.textinput import TextInput
+
+LOG=os.path.join(os.path.dirname(__file__),"signal_log.csv")
+
+def ema(x,n):
+    if not x:return 0.0
+    a=2/(n+1); e=float(x[0])
+    for v in x[1:]:e=a*float(v)+(1-a)*e
+    return e
+
+def rsi(x,n=14):
+    if len(x)<n+1:return 50.0
+    g=[];l=[]
+    for a,b in zip(x[-n-1:-1],x[-n:]):
+        d=b-a;g.append(max(d,0));l.append(max(-d,0))
+    ag=sum(g)/n; al=sum(l)/n
+    return 100.0 if al==0 else 100-100/(1+ag/al)
+
+def atr(c,n=14):
+    if len(c)<2:return 0
+    t=[]
+    for i in range(1,len(c)):
+        o,h,l,cl=c[i];pc=c[i-1][3]
+        t.append(max(h-l,abs(h-pc),abs(l-pc)))
+    return sum(t[-n:])/min(n,len(t))
+
+def support(c,n=30):
+    return min(x[2] for x in c[-n:]) if c else 0
+
+def resistance(c,n=30):
+    return max(x[1] for x in c[-n:]) if c else 0
+
+def pattern(c):
+    if len(c)<3:return "n/a"
+    o,h,l,cl=c[-1]; po,ph,pl,pc=c[-2]
+    body=abs(cl-o); rng=max(h-l,1e-9)
+    if body/rng<.12:return "DOJI"
+    if cl>o and pc<po and cl>=po and o<=pc:return "BULLISH ENGULFING"
+    if cl<o and pc>po and cl<=po and o>=pc:return "BEARISH ENGULFING"
+    upper=h-max(o,cl); lower=min(o,cl)-l
+    if lower>body*2 and upper<body:return "HAMMER"
+    if upper>body*2 and lower<body:return "SHOOTING STAR"
+    return "BULLISH" if cl>o else "BEARISH"
+
+def analyze(c):
+    if len(c)<20:return {"direction":"WAIT","score":50,"confidence":50,"reason":"Kevés adat"}
+    closes=[x[3] for x in c]
+    e9,e21,e50=ema(closes,9),ema(closes,21),ema(closes,50)
+    rr=rsi(closes); aa=atr(c)
+    mom=(closes[-1]-closes[-5])/max(abs(closes[-5]),1e-9)*100
+    s=resistance(c); sup=support(c); last=closes[-1]
+    score=50; reasons=[]
+    if e9>e21:score+=12;reasons.append("EMA9>EMA21")
+    else:score-=12;reasons.append("EMA9<EMA21")
+    if e21>e50:score+=10;reasons.append("középtáv UP")
+    else:score-=10;reasons.append("középtáv DOWN")
+    if rr>55:score+=10;reasons.append("RSI bullish")
+    elif rr<45:score-=10;reasons.append("RSI bearish")
+    score+=max(-10,min(10,mom*45))
+    p=pattern(c)
+    if "BULLISH" in p or p=="HAMMER":score+=7
+    if "BEARISH" in p or p=="SHOOTING STAR":score-=7
+    if last>sup and last<(sup+(s-sup)*.2):score+=3
+    if last<s and last>(s-(s-sup)*.2):score-=3
+    score=max(0,min(100,round(score)))
+    direction="UP" if score>=60 else "DOWN" if score<=40 else "WAIT"
+    return {"direction":direction,"score":score,"confidence":abs(score-50)*2,
+            "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,
+            "support":sup,"resistance":s,"pattern":p,"reason":", ".join(reasons)}
+
+class AppUI(BoxLayout):
+    def __init__(self,**kw):
+        super().__init__(orientation="vertical",padding=8,spacing=6,**kw)
+        self.c=deque(maxlen=300); self.last=None
+        self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=24,size_hint_y=None,height=50))
+        top=GridLayout(cols=2,size_hint_y=None,height=100)
+        self.pair=Spinner(text="EUR/USD OTC",values=("EUR/USD OTC","GBP/USD OTC","USD/JPY OTC","AUD/USD OTC"))
+        self.tf=Spinner(text="M5",values=("S3","S5","S15","M1","M5","M15","M30"))
+        top.add_widget(Label(text="Pár"));top.add_widget(self.pair)
+        top.add_widget(Label(text="Idősík"));top.add_widget(self.tf)
+        self.add_widget(top)
+        self.out=Label(text="",halign="left",valign="top")
+        self.add_widget(self.out)
+        row=GridLayout(cols=3,size_hint_y=None,height=50)
+        for t,f in [("SZIMULÁCIÓ",self.sim),("ELEMZÉS",self.run),("WIN",lambda *_:self.mark("WIN")),
+                    ("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
+            b=Button(text=t);b.bind(on_release=f);row.add_widget(b)
+        self.add_widget(row)
+        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=12,size_hint_y=None,height=30)
+        self.add_widget(self.note)
+        self.sim()
+
+    def sim(self,*_):
+        self.c.clear(); p=1.1700
+        for _ in range(120):
+            o=p; d=random.gauss(0,0.00022);cl=max(.0001,o+d)
+            h=max(o,cl)+abs(random.gauss(0,.00007));l=min(o,cl)-abs(random.gauss(0,.00007))
+            self.c.append((o,h,l,cl));p=cl
+        self.run()
+
+    def run(self,*_):
+        self.last=analyze(list(self.c));a=self.last
+        self.out.text=(f"{self.pair.text}   |   {self.tf.text}\\n\\n"
+          f"{'🟢 UP' if a['direction']=='UP' else '🔴 DOWN' if a['direction']=='DOWN' else '⚪ WAIT'}\\n"
+          f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\\n\\n"
+          f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\\n"
+          f"RSI(14): {a.get('rsi',50):.1f}\\n"
+          f"Momentum: {a.get('momentum',0):.3f}%\\n"
+          f"ATR: {a.get('atr',0):.6f}\\n"
+          f"Support: {a.get('support',0):.5f}\\n"
+          f"Resistance: {a.get('resistance',0):.5f}\\n"
+          f"Pattern: {a.get('pattern','-')}\\n\\n"
+          f"Faktorok: {a.get('reason','-')}")
+
+    def mark(self,result):
+        if not self.last:return
+        exists=os.path.exists(LOG)
+        with open(LOG,"a",newline="",encoding="utf-8") as f:
+            w=csv.writer(f)
+            if not exists:w.writerow(["timestamp","pair","tf","direction","score","confidence","rsi","momentum","atr","pattern","result"])
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),self.pair.text,self.tf.text,
+                        self.last["direction"],self.last["score"],self.last["confidence"],
+                        round(self.last.get("rsi",50),2),round(self.last.get("momentum",0),5),
+                        round(self.last.get("atr",0),8),self.last.get("pattern",""),result])
+        self.note.text=f"Eredmény elmentve: {result}"
+
+class OTCAnalyzerApp(App):
+    def build(self): return AppUI()
+
+if __name__=="__main__": OTCAnalyzerApp().run()

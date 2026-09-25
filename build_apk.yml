@@ -1,0 +1,21 @@
+name: Build OTC Analyzer APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: |
+        pip install --upgrade pip
+        pip install buildozer cython==0.29.37
+    - run: buildozer android debug
+    - uses: actions/upload-artifact@v4
+      with:
+        name: OTC-Analyzer-APK
+        path: bin/*.apk
