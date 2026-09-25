@@ -12,6 +12,8 @@ jobs:
       with:
         python-version: '3.11'
     - run: |
+          sudo apt-get update
+          sudo apt-get install -y aidl
         pip install --upgrade pip
         pip install buildozer cython==0.29.37
     - run: buildozer android debug
