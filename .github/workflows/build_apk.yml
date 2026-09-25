@@ -45,8 +45,9 @@ jobs:
         run: |
           mkdir -p "$HOME/.buildozer/android/platform"
           ln -s "$ANDROID_HOME" "$HOME/.buildozer/android/platform/android-sdk"
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/tools"
-          ln -s "$ANDROID_HOME/cmdline-tools/latest/bin" "$HOME/.buildozer/android/platform/android-sdk/tools/bin"
+          rm -rf "$HOME/.buildozer/android/platform/android-sdk/tools"
+          ln -s "$ANDROID_HOME/cmdline-tools/latest" "$HOME/.buildozer/android/platform/android-sdk/tools"
+          sudo chmod -R a+rwX "$ANDROID_HOME"
 
       - name: Build APK
         run: |
