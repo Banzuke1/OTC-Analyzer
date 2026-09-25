@@ -18,7 +18,6 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aidl
           pip install --upgrade pip
           pip install buildozer cython==0.29.37
 
