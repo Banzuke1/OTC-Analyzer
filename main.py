@@ -43,6 +43,29 @@ def atr(c,n=14):
         t.append(max(h-l,abs(h-pc),abs(l-pc)))
     return sum(t[-n:])/min(n,len(t))
 
+def adx(c,n=14):
+    if len(c)<n*2:return 0.0
+    plus_dm=[];minus_dm=[];trs=[]
+    for i in range(1,len(c)):
+        o,h,l,cl=c[i];po,ph,pl,pc=c[i-1]
+        up=h-ph;down=pl-l
+        plus_dm.append(up if (up>down and up>0) else 0.0)
+        minus_dm.append(down if (down>up and down>0) else 0.0)
+        trs.append(max(h-l,abs(h-pc),abs(l-pc)))
+    dx_values=[]
+    for i in range(n,len(trs)+1):
+        tr_n=sum(trs[i-n:i]) or 1e-9
+        pdi=100*sum(plus_dm[i-n:i])/tr_n
+        mdi=100*sum(minus_dm[i-n:i])/tr_n
+        denom=pdi+mdi
+        dx_values.append(100*abs(pdi-mdi)/denom if denom else 0.0)
+    return sum(dx_values[-n:])/min(n,len(dx_values)) if dx_values else 0.0
+
+def quality_label(adx_val):
+    if adx_val>=25:return "MAGAS"
+    if adx_val>=18:return "KÖZEPES"
+    return "ALACSONY"
+
 def support(c,n=30):
     return min(x[2] for x in c[-n:]) if c else 0
 
@@ -62,10 +85,10 @@ def pattern(c):
     return "BULLISH" if cl>o else "BEARISH"
 
 def analyze(c):
-    if len(c)<20:return {"direction":"WAIT","score":50,"confidence":50,"reason":"Kevés adat"}
+    if len(c)<20:return {"direction":"WAIT","score":50,"confidence":50,"reason":"Kevés adat","adx":0,"quality":"ALACSONY","pattern":"n/a"}
     closes=[x[3] for x in c]
     e9,e21,e50=ema(closes,9),ema(closes,21),ema(closes,50)
-    rr=rsi(closes); aa=atr(c)
+    rr=rsi(closes); aa=atr(c); adxv=adx(c)
     mom=(closes[-1]-closes[-5])/max(abs(closes[-5]),1e-9)*100
     s=resistance(c); sup=support(c); last=closes[-1]
     score=50; reasons=[]
@@ -81,10 +104,17 @@ def analyze(c):
     if "BEARISH" in p or p=="SHOOTING STAR":score-=7
     if last>sup and last<(sup+(s-sup)*.2):score+=3
     if last<s and last>(s-(s-sup)*.2):score-=3
+    # ADX szűrő: gyenge trendnél (oldalazó piac) tompítjuk a jelet
+    if adxv<18:
+        score=50+(score-50)*0.3
+        reasons.append("gyenge trend (ADX alacsony)")
+    elif adxv>=25:
+        reasons.append("erős trend (ADX magas)")
     score=max(0,min(100,round(score)))
     direction="UP" if score>=60 else "DOWN" if score<=40 else "WAIT"
     return {"direction":direction,"score":score,"confidence":abs(score-50)*2,
-            "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,
+            "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,"adx":adxv,
+            "quality":quality_label(adxv),
             "support":sup,"resistance":s,"pattern":p,"reason":", ".join(reasons)}
 
 SIGNAL_COLORS = {
@@ -204,8 +234,9 @@ class AppUI(BoxLayout):
         self._sig_color.rgba = col
         self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
         if self.overlay and self.overlay._visible:
-            self.overlay.update(a["direction"], extra=f"{a['score']}")
-        self.out.text=(f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
+            self.overlay.update(a["direction"], a["score"], a.get("quality","-"), a.get("pattern","-"))
+        self.out.text=(f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n"
+          f"MINŐSÉG: {a.get('quality','-')}   |   ADX: {a.get('adx',0):.1f}\n\n"
           f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
           f"RSI(14): {a.get('rsi',50):.1f}\n"
           f"Momentum: {a.get('momentum',0):.3f}%\n"
@@ -220,11 +251,12 @@ class AppUI(BoxLayout):
         exists=os.path.exists(LOG)
         with open(LOG,"a",newline="",encoding="utf-8") as f:
             w=csv.writer(f)
-            if not exists:w.writerow(["timestamp","direction","score","confidence","rsi","momentum","atr","pattern","result"])
+            if not exists:w.writerow(["timestamp","direction","score","confidence","rsi","momentum","atr","adx","quality","pattern","result"])
             w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),
                         self.last["direction"],self.last["score"],self.last["confidence"],
                         round(self.last.get("rsi",50),2),round(self.last.get("momentum",0),5),
-                        round(self.last.get("atr",0),8),self.last.get("pattern",""),result])
+                        round(self.last.get("atr",0),8),round(self.last.get("adx",0),2),
+                        self.last.get("quality",""),self.last.get("pattern",""),result])
         self.note.text=f"Eredmény elmentve: {result}"
 
 class OTCAnalyzerApp(App):

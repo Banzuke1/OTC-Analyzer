@@ -1,8 +1,8 @@
 """
-Compact floating badge with its own "Elemzés" (Analyze) button and a
-colored signal readout, drawn over other apps (e.g. over Pocket Option)
-using Android's "Draw over other apps" permission. Draggable to any
-non-intrusive corner.
+Compact floating signal card, drawn over other apps (e.g. Pocket Option)
+using Android's "Draw over other apps" permission. Shows the current
+score/direction, quality (ADX-based) and detected candle pattern, plus
+its own "Elemzés" (Analyze) button. Draggable to any corner.
 """
 try:
     from jnius import autoclass, PythonJavaClass, java_method
@@ -11,10 +11,15 @@ try:
 except Exception:
     ANDROID = False
 
-COLOR_MAP = {
-    "UP":   0xFF22B233,
-    "DOWN": 0xFFD92619,
-    "WAIT": 0xFF59595E,
+BG_MAP = {
+    "UP":   0xFF184D22,
+    "DOWN": 0xFF4D1814,
+    "WAIT": 0xFF2A2A30,
+}
+TEXT_MAP = {
+    "UP":   0xFF3DDC5A,
+    "DOWN": 0xFFFF5449,
+    "WAIT": 0xFFBFBFC6,
 }
 
 def _s32(x):
@@ -22,11 +27,21 @@ def _s32(x):
     x &= 0xFFFFFFFF
     return x - 0x100000000 if x >= 0x80000000 else x
 
+def _jstr(text):
+    """Explicit Java String objektum, hogy a pyjnius biztosan a
+    setText(CharSequence) túlterhelést válassza."""
+    if not ANDROID:
+        return text
+    JString = autoclass('java.lang.String')
+    return JString(text)
+
+
 class FloatingSignal:
     def __init__(self, on_analyze=None):
         self.on_analyze = on_analyze
-        self._container = None
-        self._signal_text = None
+        self._card = None
+        self._score_text = None
+        self._detail_text = None
         self._params = None
         self._wm = None
         self._visible = False
@@ -68,9 +83,10 @@ class FloatingSignal:
         GradientDrawable = autoclass('android.graphics.drawable.GradientDrawable')
 
         overlay_type = LayoutParams.TYPE_APPLICATION_OVERLAY if Build.SDK_INT >= 26 else LayoutParams.TYPE_PHONE
+        WRAP_CONTENT = -2
 
         self._params = LayoutParams(
-            dp_to_px(190), dp_to_px(52),
+            dp_to_px(210), WRAP_CONTENT,
             overlay_type,
             LayoutParams.FLAG_NOT_FOCUSABLE | LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -79,55 +95,64 @@ class FloatingSignal:
         self._params.x = dp_to_px(16)
         self._params.y = dp_to_px(120)
 
-        self._container = LinearLayout(mActivity)
-        self._container.setOrientation(LinearLayout.HORIZONTAL)
-        bg = GradientDrawable(); bg.setColor(_s32(0xDD1A1A22)); bg.setCornerRadius(28)
-        self._container.setBackground(bg)
-        self._container.setPadding(dp_to_px(6), dp_to_px(4), dp_to_px(6), dp_to_px(4))
+        self._card = LinearLayout(mActivity)
+        self._card.setOrientation(LinearLayout.VERTICAL)
+        bg = GradientDrawable(); bg.setColor(_s32(0xF0141418)); bg.setCornerRadius(dp_to_px(14))
+        self._card.setBackground(bg)
+        pad = dp_to_px(10)
+        self._card.setPadding(pad, pad, pad, pad)
+
+        self._score_text = TextView(mActivity)
+        self._score_text.setText(_jstr("⚪ VÁRAKOZÁS  50/100"))
+        self._score_text.setTextColor(_s32(TEXT_MAP["WAIT"]))
+        self._score_text.setTextSize(16)
+        self._card.addView(self._score_text)
+
+        self._detail_text = TextView(mActivity)
+        self._detail_text.setText(_jstr("Minőség: -  •  Minta: -"))
+        self._detail_text.setTextColor(_s32(0xFFAAAAB0))
+        self._detail_text.setTextSize(11)
+        self._detail_text.setPadding(0, dp_to_px(4), 0, dp_to_px(8))
+        self._card.addView(self._detail_text)
 
         analyze_btn = Button(mActivity)
-        analyze_btn.setText("Elemzés")
-        analyze_btn.setTextSize(12)
+        analyze_btn.setText(_jstr("Elemzés"))
+        analyze_btn.setTextSize(13)
         analyze_btn.setAllCaps(False)
         analyze_btn.setOnClickListener(_ClickListener(self._on_click))
-        self._container.addView(analyze_btn)
+        self._card.addView(analyze_btn)
 
-        self._signal_text = TextView(mActivity)
-        self._signal_text.setText("⚪ WAIT")
-        self._signal_text.setTextColor(Color.WHITE)
-        self._signal_text.setTextSize(13)
-        self._signal_text.setPadding(dp_to_px(10), 0, dp_to_px(4), 0)
-        self._set_bg(self._signal_text, COLOR_MAP["WAIT"])
-        self._container.addView(self._signal_text)
+        self._card.setOnTouchListener(_DragTouchListener(self._card, self._params, self))
 
-        self._container.setOnTouchListener(_DragTouchListener(self._container, self._params, self))
+        self._set_card_bg("WAIT")
 
         self._wm = mActivity.getSystemService(Context.WINDOW_SERVICE)
-        self._wm.addView(self._container, self._params)
+        self._wm.addView(self._card, self._params)
         self._visible = True
 
     def _on_click(self):
         if self.on_analyze:
             self.on_analyze()
 
-    def _set_bg(self, view, argb):
+    def _set_card_bg(self, direction):
         GradientDrawable = autoclass('android.graphics.drawable.GradientDrawable')
         drawable = GradientDrawable()
-        drawable.setColor(_s32(argb))
-        drawable.setCornerRadius(20)
-        view.setBackground(drawable)
-        view.setPadding(dp_to_px(10), dp_to_px(6), dp_to_px(10), dp_to_px(6))
+        drawable.setColor(_s32(BG_MAP.get(direction, BG_MAP["WAIT"])))
+        drawable.setCornerRadius(dp_to_px(14))
+        self._card.setBackground(drawable)
 
-    def update(self, direction, extra=""):
-        if not ANDROID or self._signal_text is None:
+    def update(self, direction, score=0, quality="-", pattern="-"):
+        if not ANDROID or self._score_text is None:
             return
-        label = {"UP": "🟢 UP", "DOWN": "🔴 DOWN", "WAIT": "⚪ WAIT"}.get(direction, direction)
-        self._set_bg(self._signal_text, COLOR_MAP.get(direction, COLOR_MAP["WAIT"]))
-        self._signal_text.setText(f"{label} {extra}")
+        label = {"UP": "🟢 BUY / UP", "DOWN": "🔴 SELL / DOWN", "WAIT": "⚪ VÁRAKOZÁS"}.get(direction, direction)
+        self._score_text.setText(_jstr(f"{label}  {score}/100"))
+        self._score_text.setTextColor(_s32(TEXT_MAP.get(direction, TEXT_MAP["WAIT"])))
+        self._detail_text.setText(_jstr(f"Minőség: {quality}  •  Minta: {pattern}"))
+        self._set_card_bg(direction)
 
     def hide(self):
         if ANDROID and self._wm and self._visible:
-            self._wm.removeView(self._container)
+            self._wm.removeView(self._card)
             self._visible = False
 
 
@@ -163,7 +188,6 @@ if ANDROID:
             self.owner = owner
             self.start_x = 0; self.start_y = 0
             self.touch_x = 0; self.touch_y = 0
-            self.moved = False
 
         @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
         def onTouch(self, v, event):
@@ -174,13 +198,11 @@ if ANDROID:
                 self.start_y = self.params.y
                 self.touch_x = event.getRawX()
                 self.touch_y = event.getRawY()
-                self.moved = False
                 return False
             elif action == MotionEvent.ACTION_MOVE:
                 dx = event.getRawX() - self.touch_x
                 dy = event.getRawY() - self.touch_y
                 if abs(dx) > 8 or abs(dy) > 8:
-                    self.moved = True
                     self.params.x = int(self.start_x + dx)
                     self.params.y = int(self.start_y + dy)
                     self.owner._wm.updateViewLayout(self.view, self.params)
