@@ -15,6 +15,10 @@ try:
     from android_capture import ScreenCapture, ANDROID
 except Exception:
     ScreenCapture, ANDROID = None, False
+try:
+    from overlay import FloatingSignal
+except Exception:
+    FloatingSignal = None
 
 LOG=os.path.join(os.path.dirname(__file__),"signal_log.csv")
 
@@ -96,6 +100,7 @@ class AppUI(BoxLayout):
         self.c=deque(maxlen=300); self.last=None
         self.live=False
         self.capture=None
+        self.overlay = FloatingSignal() if FloatingSignal else None
 
         self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(24),size_hint_y=None,height=dp(50)))
 
@@ -120,8 +125,8 @@ class AppUI(BoxLayout):
         self.add_widget(self.out)
 
         row=GridLayout(cols=3,size_hint_y=None,height=dp(50),spacing=dp(4))
-        for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("ELEMZÉS",self.run),
-                    ("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
+        for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("OVERLAY",self.toggle_overlay),
+                    ("ELEMZÉS",self.run),("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
             b=Button(text=t);b.bind(on_release=f);row.add_widget(b)
         self.add_widget(row)
 
@@ -162,17 +167,36 @@ class AppUI(BoxLayout):
 
     def _on_frame(self, pil_image):
         candles = extract_candles(pil_image)
+        added = 0
         if candles:
             for cndl in candles[-5:]:
                 if cndl not in self.c:
-                    self.c.append(cndl)
-        Clock.schedule_once(lambda dt: self.run())
+                    self.c.append(cndl); added += 1
+        status = f"Élő mód aktív • {len(candles)} gyertya a képen • {len(self.c)} eltárolva"
+        Clock.schedule_once(lambda dt: self._update_live_status(status))
+
+    def _update_live_status(self, status):
+        self.note.text = status
+        self.run()
+
+    def toggle_overlay(self,*_):
+        if not self.overlay:
+            self.note.text="Overlay csak a telepített Android appban működik."
+            return
+        if self.overlay._visible:
+            self.overlay.hide()
+            self.note.text="Overlay elrejtve."
+        else:
+            self.overlay.show()
+            self.note.text="Overlay bekapcsolva (ha nem látszik, engedélyezd a 'Megjelenítés más appok felett' opciót, majd nyomd meg újra)."
 
     def run(self,*_):
         self.last=analyze(list(self.c));a=self.last
         col = SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
         self._sig_color.rgba = col
         self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
+        if self.overlay and self.overlay._visible:
+            self.overlay.update(a["direction"], extra=f"{a['score']}")
         self.out.text=(f"{self.pair.text}   |   {self.tf.text}\n\n"
           f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
           f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"

@@ -11,7 +11,7 @@ fullscreen = 0
 android.api = 35
 android.minapi = 24
 android.archs = arm64-v8a
-android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MEDIA_PROJECTION
+android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MEDIA_PROJECTION,SYSTEM_ALERT_WINDOW
 android.accept_sdk_license = True
 
 [buildozer]
