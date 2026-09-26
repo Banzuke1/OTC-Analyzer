@@ -2,6 +2,7 @@ import os, csv, time, math, random
 from collections import deque
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
@@ -79,25 +80,29 @@ def analyze(c):
 
 class AppUI(BoxLayout):
     def __init__(self,**kw):
-        super().__init__(orientation="vertical",padding=8,spacing=6,**kw)
+        super().__init__(orientation="vertical",padding=dp(8),spacing=dp(6),**kw)
         self.c=deque(maxlen=300); self.last=None
-        self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=24,size_hint_y=None,height=50))
-        top=GridLayout(cols=2,size_hint_y=None,height=100)
+        self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(24),size_hint_y=None,height=dp(50)))
+        top=GridLayout(cols=2,size_hint_y=None,height=dp(100))
         self.pair=Spinner(text="EUR/USD OTC",values=("EUR/USD OTC","GBP/USD OTC","USD/JPY OTC","AUD/USD OTC"))
         self.tf=Spinner(text="M5",values=("S3","S5","S15","M1","M5","M15","M30"))
         top.add_widget(Label(text="Pár"));top.add_widget(self.pair)
         top.add_widget(Label(text="Idősík"));top.add_widget(self.tf)
         self.add_widget(top)
-        self.out=Label(text="",halign="left",valign="top")
+        self.out=Label(text="",halign="left",valign="top",font_size=sp(16))
+        self.out.bind(size=self._update_text_size)
         self.add_widget(self.out)
-        row=GridLayout(cols=3,size_hint_y=None,height=50)
+        row=GridLayout(cols=3,size_hint_y=None,height=dp(50),spacing=dp(4))
         for t,f in [("SZIMULÁCIÓ",self.sim),("ELEMZÉS",self.run),("WIN",lambda *_:self.mark("WIN")),
                     ("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
             b=Button(text=t);b.bind(on_release=f);row.add_widget(b)
         self.add_widget(row)
-        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=12,size_hint_y=None,height=30)
+        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(30))
         self.add_widget(self.note)
         self.sim()
+
+    def _update_text_size(self,inst,val):
+        inst.text_size=(inst.width,None)
 
     def sim(self,*_):
         self.c.clear(); p=1.1700
@@ -109,16 +114,16 @@ class AppUI(BoxLayout):
 
     def run(self,*_):
         self.last=analyze(list(self.c));a=self.last
-        self.out.text=(f"{self.pair.text}   |   {self.tf.text}\\n\\n"
-          f"{'🟢 UP' if a['direction']=='UP' else '🔴 DOWN' if a['direction']=='DOWN' else '⚪ WAIT'}\\n"
-          f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\\n\\n"
-          f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\\n"
-          f"RSI(14): {a.get('rsi',50):.1f}\\n"
-          f"Momentum: {a.get('momentum',0):.3f}%\\n"
-          f"ATR: {a.get('atr',0):.6f}\\n"
-          f"Support: {a.get('support',0):.5f}\\n"
-          f"Resistance: {a.get('resistance',0):.5f}\\n"
-          f"Pattern: {a.get('pattern','-')}\\n\\n"
+        self.out.text=(f"{self.pair.text}   |   {self.tf.text}\n\n"
+          f"{'🟢 UP' if a['direction']=='UP' else '🔴 DOWN' if a['direction']=='DOWN' else '⚪ WAIT'}\n"
+          f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
+          f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
+          f"RSI(14): {a.get('rsi',50):.1f}\n"
+          f"Momentum: {a.get('momentum',0):.3f}%\n"
+          f"ATR: {a.get('atr',0):.6f}\n"
+          f"Support: {a.get('support',0):.5f}\n"
+          f"Resistance: {a.get('resistance',0):.5f}\n"
+          f"Pattern: {a.get('pattern','-')}\n\n"
           f"Faktorok: {a.get('reason','-')}")
 
     def mark(self,result):
