@@ -182,12 +182,21 @@ class AppUI(BoxLayout):
         if not self.overlay:
             self.note.text="Overlay csak a telepített Android appban működik."
             return
-        if self.overlay._visible:
-            self.overlay.hide()
-            self.note.text="Overlay elrejtve."
-        else:
-            self.overlay.show()
-            self.note.text="Overlay bekapcsolva (ha nem látszik, engedélyezd a 'Megjelenítés más appok felett' opciót, majd nyomd meg újra)."
+        try:
+            if self.overlay._visible:
+                self.overlay.hide()
+                self.note.text="Overlay elrejtve."
+            else:
+                self.overlay.show()
+                if self.overlay._visible:
+                    self.note.text="Overlay bekapcsolva."
+                else:
+                    self.note.text="Engedélykérés elküldve - lépj vissza ide, és nyomd meg újra az OVERLAY gombot."
+        except Exception as e:
+            import traceback
+            err = traceback.format_exc()
+            print("OVERLAY HIBA:", err)
+            self.note.text=f"OVERLAY HIBA: {type(e).__name__}: {str(e)[:200]}"
 
     def run(self,*_):
         self.last=analyze(list(self.c));a=self.last
