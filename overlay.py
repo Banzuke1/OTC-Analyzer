@@ -17,6 +17,11 @@ COLOR_MAP = {
     "WAIT": 0xFF59595E,
 }
 
+def _s32(x):
+    """Konvertálja az ARGB hex értéket előjeles 32 bites Java int-té."""
+    x &= 0xFFFFFFFF
+    return x - 0x100000000 if x >= 0x80000000 else x
+
 class FloatingSignal:
     def __init__(self, on_analyze=None):
         self.on_analyze = on_analyze
@@ -76,7 +81,7 @@ class FloatingSignal:
 
         self._container = LinearLayout(mActivity)
         self._container.setOrientation(LinearLayout.HORIZONTAL)
-        bg = GradientDrawable(); bg.setColor(0xDD1A1A22); bg.setCornerRadius(28)
+        bg = GradientDrawable(); bg.setColor(_s32(0xDD1A1A22)); bg.setCornerRadius(28)
         self._container.setBackground(bg)
         self._container.setPadding(dp_to_px(6), dp_to_px(4), dp_to_px(6), dp_to_px(4))
 
@@ -108,7 +113,7 @@ class FloatingSignal:
     def _set_bg(self, view, argb):
         GradientDrawable = autoclass('android.graphics.drawable.GradientDrawable')
         drawable = GradientDrawable()
-        drawable.setColor(argb)
+        drawable.setColor(_s32(argb))
         drawable.setCornerRadius(20)
         view.setBackground(drawable)
         view.setPadding(dp_to_px(10), dp_to_px(6), dp_to_px(10), dp_to_px(6))
