@@ -7,7 +7,6 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
-from kivy.uix.spinner import Spinner
 from kivy.graphics import Color, Rectangle
 
 from chart_adapter import extract_candles
@@ -100,16 +99,9 @@ class AppUI(BoxLayout):
         self.c=deque(maxlen=300); self.last=None
         self.live=False
         self.capture=None
-        self.overlay = FloatingSignal() if FloatingSignal else None
+        self.overlay = FloatingSignal(on_analyze=self.manual_refresh) if FloatingSignal else None
 
-        self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(24),size_hint_y=None,height=dp(50)))
-
-        top=GridLayout(cols=2,size_hint_y=None,height=dp(100))
-        self.pair=Spinner(text="EUR/USD OTC",values=("EUR/USD OTC","GBP/USD OTC","USD/JPY OTC","AUD/USD OTC"))
-        self.tf=Spinner(text="M5",values=("S3","S5","S15","M1","M5","M15","M30"))
-        top.add_widget(Label(text="Pár"));top.add_widget(self.pair)
-        top.add_widget(Label(text="Idősík"));top.add_widget(self.tf)
-        self.add_widget(top)
+        self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(22),size_hint_y=None,height=dp(44)))
 
         self.signal_bar = BoxLayout(size_hint_y=None, height=dp(70))
         with self.signal_bar.canvas.before:
@@ -124,13 +116,17 @@ class AppUI(BoxLayout):
         self.out.bind(size=self._update_text_size)
         self.add_widget(self.out)
 
-        row=GridLayout(cols=3,size_hint_y=None,height=dp(50),spacing=dp(4))
-        for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("OVERLAY",self.toggle_overlay),
-                    ("ELEMZÉS",self.run),("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
-            b=Button(text=t);b.bind(on_release=f);row.add_widget(b)
-        self.add_widget(row)
+        row1=GridLayout(cols=3,size_hint_y=None,height=dp(52),spacing=dp(4))
+        for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("OVERLAY",self.toggle_overlay)]:
+            b=Button(text=t,font_size=sp(13));b.bind(on_release=f);row1.add_widget(b)
+        self.add_widget(row1)
 
-        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(30))
+        row2=GridLayout(cols=3,size_hint_y=None,height=dp(52),spacing=dp(4))
+        for t,f in [("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
+            b=Button(text=t,font_size=sp(13));b.bind(on_release=f);row2.add_widget(b)
+        self.add_widget(row2)
+
+        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(36))
         self.add_widget(self.note)
         self.sim()
 
@@ -167,17 +163,20 @@ class AppUI(BoxLayout):
 
     def _on_frame(self, pil_image):
         candles = extract_candles(pil_image)
-        added = 0
         if candles:
             for cndl in candles[-5:]:
                 if cndl not in self.c:
-                    self.c.append(cndl); added += 1
+                    self.c.append(cndl)
         status = f"Élő mód aktív • {len(candles)} gyertya a képen • {len(self.c)} eltárolva"
         Clock.schedule_once(lambda dt: self._update_live_status(status))
 
     def _update_live_status(self, status):
         self.note.text = status
         self.run()
+
+    def manual_refresh(self):
+        """Az overlay 'Elemzés' gombja hívja - egyszeri friss elemzés."""
+        Clock.schedule_once(lambda dt: self.run())
 
     def toggle_overlay(self,*_):
         if not self.overlay:
@@ -197,8 +196,7 @@ class AppUI(BoxLayout):
         self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
         if self.overlay and self.overlay._visible:
             self.overlay.update(a["direction"], extra=f"{a['score']}")
-        self.out.text=(f"{self.pair.text}   |   {self.tf.text}\n\n"
-          f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
+        self.out.text=(f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
           f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
           f"RSI(14): {a.get('rsi',50):.1f}\n"
           f"Momentum: {a.get('momentum',0):.3f}%\n"
@@ -213,8 +211,8 @@ class AppUI(BoxLayout):
         exists=os.path.exists(LOG)
         with open(LOG,"a",newline="",encoding="utf-8") as f:
             w=csv.writer(f)
-            if not exists:w.writerow(["timestamp","pair","tf","direction","score","confidence","rsi","momentum","atr","pattern","result"])
-            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),self.pair.text,self.tf.text,
+            if not exists:w.writerow(["timestamp","direction","score","confidence","rsi","momentum","atr","pattern","result"])
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),
                         self.last["direction"],self.last["score"],self.last["confidence"],
                         round(self.last.get("rsi",50),2),round(self.last.get("momentum",0),5),
                         round(self.last.get("atr",0),8),self.last.get("pattern",""),result])

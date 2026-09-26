@@ -1,8 +1,8 @@
 """
-Small always-on-top floating signal badge, drawn over other apps
-(e.g. over the Pocket Option app) using Android's "Draw over other apps"
-permission. Shows a colored badge (UP/DOWN/WAIT) that can be dragged to
-a non-intrusive corner.
+Compact floating badge with its own "Elemzés" (Analyze) button and a
+colored signal readout, drawn over other apps (e.g. over Pocket Option)
+using Android's "Draw over other apps" permission. Draggable to any
+non-intrusive corner.
 """
 try:
     from jnius import autoclass, PythonJavaClass, java_method
@@ -18,11 +18,12 @@ COLOR_MAP = {
 }
 
 class FloatingSignal:
-    def __init__(self):
-        self._view = None
+    def __init__(self, on_analyze=None):
+        self.on_analyze = on_analyze
+        self._container = None
+        self._signal_text = None
         self._params = None
         self._wm = None
-        self._text = None
         self._visible = False
 
     def can_draw_overlays(self):
@@ -53,15 +54,18 @@ class FloatingSignal:
         LayoutParams = autoclass('android.view.WindowManager$LayoutParams')
         PixelFormat = autoclass('android.graphics.PixelFormat')
         Gravity = autoclass('android.view.Gravity')
+        LinearLayout = autoclass('android.widget.LinearLayout')
         TextView = autoclass('android.widget.TextView')
+        Button = autoclass('android.widget.Button')
         Context = autoclass('android.content.Context')
         Build = autoclass('android.os.Build$VERSION')
         Color = autoclass('android.graphics.Color')
+        GradientDrawable = autoclass('android.graphics.drawable.GradientDrawable')
 
         overlay_type = LayoutParams.TYPE_APPLICATION_OVERLAY if Build.SDK_INT >= 26 else LayoutParams.TYPE_PHONE
 
         self._params = LayoutParams(
-            dp_to_px(120), dp_to_px(48),
+            dp_to_px(190), dp_to_px(52),
             overlay_type,
             LayoutParams.FLAG_NOT_FOCUSABLE | LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -70,37 +74,55 @@ class FloatingSignal:
         self._params.x = dp_to_px(16)
         self._params.y = dp_to_px(120)
 
-        self._text = TextView(mActivity)
-        self._text.setText("⚪ WAIT")
-        self._text.setTextColor(Color.WHITE)
-        self._text.setTextSize(14)
-        self._text.setGravity(Gravity.CENTER)
-        self._set_bg(COLOR_MAP["WAIT"])
-        self._text.setOnTouchListener(_DragTouchListener(self._text, self._params, self))
+        self._container = LinearLayout(mActivity)
+        self._container.setOrientation(LinearLayout.HORIZONTAL)
+        bg = GradientDrawable(); bg.setColor(0xDD1A1A22); bg.setCornerRadius(28)
+        self._container.setBackground(bg)
+        self._container.setPadding(dp_to_px(6), dp_to_px(4), dp_to_px(6), dp_to_px(4))
+
+        analyze_btn = Button(mActivity)
+        analyze_btn.setText("Elemzés")
+        analyze_btn.setTextSize(12)
+        analyze_btn.setAllCaps(False)
+        analyze_btn.setOnClickListener(_ClickListener(self._on_click))
+        self._container.addView(analyze_btn)
+
+        self._signal_text = TextView(mActivity)
+        self._signal_text.setText("⚪ WAIT")
+        self._signal_text.setTextColor(Color.WHITE)
+        self._signal_text.setTextSize(13)
+        self._signal_text.setPadding(dp_to_px(10), 0, dp_to_px(4), 0)
+        self._set_bg(self._signal_text, COLOR_MAP["WAIT"])
+        self._container.addView(self._signal_text)
+
+        self._container.setOnTouchListener(_DragTouchListener(self._container, self._params, self))
 
         self._wm = mActivity.getSystemService(Context.WINDOW_SERVICE)
-        self._wm.addView(self._text, self._params)
+        self._wm.addView(self._container, self._params)
         self._visible = True
 
-    def _set_bg(self, argb):
-        if not ANDROID or self._text is None:
-            return
+    def _on_click(self):
+        if self.on_analyze:
+            self.on_analyze()
+
+    def _set_bg(self, view, argb):
         GradientDrawable = autoclass('android.graphics.drawable.GradientDrawable')
         drawable = GradientDrawable()
         drawable.setColor(argb)
-        drawable.setCornerRadius(24)
-        self._text.setBackground(drawable)
+        drawable.setCornerRadius(20)
+        view.setBackground(drawable)
+        view.setPadding(dp_to_px(10), dp_to_px(6), dp_to_px(10), dp_to_px(6))
 
     def update(self, direction, extra=""):
-        if not ANDROID or self._text is None:
+        if not ANDROID or self._signal_text is None:
             return
         label = {"UP": "🟢 UP", "DOWN": "🔴 DOWN", "WAIT": "⚪ WAIT"}.get(direction, direction)
-        self._set_bg(COLOR_MAP.get(direction, COLOR_MAP["WAIT"]))
-        self._text.setText(f"{label} {extra}")
+        self._set_bg(self._signal_text, COLOR_MAP.get(direction, COLOR_MAP["WAIT"]))
+        self._signal_text.setText(f"{label} {extra}")
 
     def hide(self):
         if ANDROID and self._wm and self._visible:
-            self._wm.removeView(self._text)
+            self._wm.removeView(self._container)
             self._visible = False
 
 
@@ -113,6 +135,18 @@ def dp_to_px(dp_val):
 
 
 if ANDROID:
+    class _ClickListener(PythonJavaClass):
+        __javainterfaces__ = ['android/view/View$OnClickListener']
+        __javacontext__ = 'app'
+
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+
+        @java_method('(Landroid/view/View;)V')
+        def onClick(self, v):
+            self.callback()
+
     class _DragTouchListener(PythonJavaClass):
         __javainterfaces__ = ['android/view/View$OnTouchListener']
         __javacontext__ = 'app'
@@ -124,6 +158,7 @@ if ANDROID:
             self.owner = owner
             self.start_x = 0; self.start_y = 0
             self.touch_x = 0; self.touch_y = 0
+            self.moved = False
 
         @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
         def onTouch(self, v, event):
@@ -134,10 +169,15 @@ if ANDROID:
                 self.start_y = self.params.y
                 self.touch_x = event.getRawX()
                 self.touch_y = event.getRawY()
-                return True
+                self.moved = False
+                return False
             elif action == MotionEvent.ACTION_MOVE:
-                self.params.x = int(self.start_x + (event.getRawX() - self.touch_x))
-                self.params.y = int(self.start_y + (event.getRawY() - self.touch_y))
-                self.owner._wm.updateViewLayout(self.view, self.params)
-                return True
+                dx = event.getRawX() - self.touch_x
+                dy = event.getRawY() - self.touch_y
+                if abs(dx) > 8 or abs(dy) > 8:
+                    self.moved = True
+                    self.params.x = int(self.start_x + dx)
+                    self.params.y = int(self.start_y + dy)
+                    self.owner._wm.updateViewLayout(self.view, self.params)
+                    return True
             return False
