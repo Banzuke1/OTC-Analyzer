@@ -5,7 +5,7 @@ package.domain = org.otcanalyzer
 source.dir = .
 source.include_exts = py,png,jpg,json,csv,kv
 version = 1.0.0
-requirements = python3==3.11.9,hostpython3==3.11.9,kivy
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy,pillow,android
 orientation = portrait
 fullscreen = 0
 android.api = 35

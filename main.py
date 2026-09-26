@@ -8,7 +8,13 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.spinner import Spinner
-from kivy.uix.textinput import TextInput
+from kivy.graphics import Color, Rectangle
+
+from chart_adapter import extract_candles
+try:
+    from android_capture import ScreenCapture, ANDROID
+except Exception:
+    ScreenCapture, ANDROID = None, False
 
 LOG=os.path.join(os.path.dirname(__file__),"signal_log.csv")
 
@@ -78,33 +84,60 @@ def analyze(c):
             "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,
             "support":sup,"resistance":s,"pattern":p,"reason":", ".join(reasons)}
 
+SIGNAL_COLORS = {
+    "UP":   (0.13, 0.70, 0.20, 1),
+    "DOWN": (0.85, 0.15, 0.10, 1),
+    "WAIT": (0.35, 0.35, 0.38, 1),
+}
+
 class AppUI(BoxLayout):
     def __init__(self,**kw):
         super().__init__(orientation="vertical",padding=dp(8),spacing=dp(6),**kw)
         self.c=deque(maxlen=300); self.last=None
+        self.live=False
+        self.capture=None
+
         self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(24),size_hint_y=None,height=dp(50)))
+
         top=GridLayout(cols=2,size_hint_y=None,height=dp(100))
         self.pair=Spinner(text="EUR/USD OTC",values=("EUR/USD OTC","GBP/USD OTC","USD/JPY OTC","AUD/USD OTC"))
         self.tf=Spinner(text="M5",values=("S3","S5","S15","M1","M5","M15","M30"))
         top.add_widget(Label(text="Pár"));top.add_widget(self.pair)
         top.add_widget(Label(text="Idősík"));top.add_widget(self.tf)
         self.add_widget(top)
+
+        self.signal_bar = BoxLayout(size_hint_y=None, height=dp(70))
+        with self.signal_bar.canvas.before:
+            self._sig_color = Color(*SIGNAL_COLORS["WAIT"])
+            self._sig_rect = Rectangle(pos=self.signal_bar.pos, size=self.signal_bar.size)
+        self.signal_bar.bind(pos=self._sync_rect, size=self._sync_rect)
+        self.signal_label = Label(text="VÁRAKOZÁS", font_size=sp(28), bold=True)
+        self.signal_bar.add_widget(self.signal_label)
+        self.add_widget(self.signal_bar)
+
         self.out=Label(text="",halign="left",valign="top",font_size=sp(16))
         self.out.bind(size=self._update_text_size)
         self.add_widget(self.out)
+
         row=GridLayout(cols=3,size_hint_y=None,height=dp(50),spacing=dp(4))
-        for t,f in [("SZIMULÁCIÓ",self.sim),("ELEMZÉS",self.run),("WIN",lambda *_:self.mark("WIN")),
-                    ("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
+        for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("ELEMZÉS",self.run),
+                    ("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
             b=Button(text=t);b.bind(on_release=f);row.add_widget(b)
         self.add_widget(row)
+
         self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(30))
         self.add_widget(self.note)
         self.sim()
+
+    def _sync_rect(self, inst, val):
+        self._sig_rect.pos = inst.pos
+        self._sig_rect.size = inst.size
 
     def _update_text_size(self,inst,val):
         inst.text_size=(inst.width,None)
 
     def sim(self,*_):
+        if self.live: self.toggle_live()
         self.c.clear(); p=1.1700
         for _ in range(120):
             o=p; d=random.gauss(0,0.00022);cl=max(.0001,o+d)
@@ -112,10 +145,35 @@ class AppUI(BoxLayout):
             self.c.append((o,h,l,cl));p=cl
         self.run()
 
+    def toggle_live(self,*_):
+        if not ANDROID or ScreenCapture is None:
+            self.note.text="Élő mód csak a telepített Android appban működik."
+            return
+        if self.live:
+            self.live=False
+            if self.capture: self.capture.stop()
+            self.note.text="Élő mód leállítva."
+            return
+        self.c.clear()
+        self.capture = ScreenCapture(on_frame=self._on_frame, interval=5.0)
+        self.capture.request_permission()
+        self.live=True
+        self.note.text="Élő mód: engedélyt kérünk a képernyőrögzítéshez…"
+
+    def _on_frame(self, pil_image):
+        candles = extract_candles(pil_image)
+        if candles:
+            for cndl in candles[-5:]:
+                if cndl not in self.c:
+                    self.c.append(cndl)
+        Clock.schedule_once(lambda dt: self.run())
+
     def run(self,*_):
         self.last=analyze(list(self.c));a=self.last
+        col = SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
+        self._sig_color.rgba = col
+        self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
         self.out.text=(f"{self.pair.text}   |   {self.tf.text}\n\n"
-          f"{'🟢 UP' if a['direction']=='UP' else '🔴 DOWN' if a['direction']=='DOWN' else '⚪ WAIT'}\n"
           f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n\n"
           f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
           f"RSI(14): {a.get('rsi',50):.1f}\n"
