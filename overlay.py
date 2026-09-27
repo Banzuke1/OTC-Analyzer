@@ -192,10 +192,13 @@ if ANDROID:
 
         @java_method('(Landroid/view/View;)V')
         def onClick(self, v):
-            try:
-                self.callback()
-            except Exception:
-                _safe_log("overlay onClick")
+            import threading
+            def _run():
+                try:
+                    self.callback()
+                except Exception:
+                    _safe_log("overlay onClick (threaded)")
+            threading.Thread(target=_run, daemon=True).start()
 
     class _DragTouchListener(PythonJavaClass):
         __javainterfaces__ = ['android/view/View$OnTouchListener']
