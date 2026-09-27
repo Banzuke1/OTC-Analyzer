@@ -256,10 +256,7 @@ class AppUI(BoxLayout):
                 self.note.text="Overlay elrejtve."
             else:
                 self.overlay.show()
-                if self.overlay._visible:
-                    self.note.text="Overlay bekapcsolva."
-                else:
-                    self.note.text="Engedélykérés elküldve - lépj vissza ide, és nyomd meg újra az OVERLAY gombot."
+                self.note.text="Overlay parancs elküldve (ha engedély kell, engedélyezd, majd nyomd meg újra)."
         except Exception as e:
             import traceback
             err = traceback.format_exc()

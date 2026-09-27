@@ -7,9 +7,12 @@ its own "Elemzés" (Analyze) button. Draggable to any corner.
 try:
     from jnius import autoclass, PythonJavaClass, java_method
     from android import mActivity
+    from android.runnable import run_on_ui_thread
     ANDROID = True
 except Exception:
     ANDROID = False
+    def run_on_ui_thread(f):
+        return f
 
 BG_MAP = {
     "UP":   0xFF184D22,
@@ -64,6 +67,7 @@ class FloatingSignal:
         )
         mActivity.startActivity(intent)
 
+    @run_on_ui_thread
     def show(self):
         if not ANDROID or self._visible:
             return
@@ -141,6 +145,7 @@ class FloatingSignal:
         drawable.setCornerRadius(dp_to_px(14))
         self._card.setBackground(drawable)
 
+    @run_on_ui_thread
     def update(self, direction, score=0, quality="-", pattern="-"):
         if not ANDROID or self._score_text is None:
             return
@@ -150,6 +155,7 @@ class FloatingSignal:
         self._detail_text.setText(_jstr(f"Minőség: {quality}  •  Minta: {pattern}"))
         self._set_card_bg(direction)
 
+    @run_on_ui_thread
     def hide(self):
         if ANDROID and self._wm and self._visible:
             self._wm.removeView(self._card)
