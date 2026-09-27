@@ -9,6 +9,9 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.graphics import Color, Rectangle
 
+import crash_logger
+crash_logger.install()
+
 from chart_adapter import extract_candles
 from roi_selector import ROISelector, load_roi, save_roi, DEFAULT_ROI
 try:
@@ -133,12 +136,23 @@ class AppUI(BoxLayout):
         self._awaiting_roi_frame=False
         self._data_dir = App.get_running_app().user_data_dir
         self.roi = load_roi(self._data_dir)
+        self._last_crash = crash_logger.read_and_clear()
         self._build_main_ui()
         self.sim()
 
     def _build_main_ui(self):
         self.clear_widgets()
         self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(22),size_hint_y=None,height=dp(44)))
+        if self._last_crash:
+            crash_lbl = Label(text="ELŐZŐ ÖSSZEOMLÁS:\n"+self._last_crash[-1200:],
+                               font_size=sp(10), halign="left", valign="top",
+                               size_hint_y=None, color=(1,0.5,0.5,1))
+            crash_lbl.bind(width=lambda i,v: setattr(i,"text_size",(v,None)))
+            crash_lbl.bind(texture_size=lambda i,v: setattr(i,"height",v[1]))
+            self.add_widget(crash_lbl)
+            dismiss = Button(text="Hiba törlése",size_hint_y=None,height=dp(40))
+            dismiss.bind(on_release=lambda *_: self._dismiss_crash())
+            self.add_widget(dismiss)
 
         self.signal_bar = BoxLayout(size_hint_y=None, height=dp(70))
         with self.signal_bar.canvas.before:
@@ -173,6 +187,10 @@ class AppUI(BoxLayout):
     def _sync_rect(self, inst, val):
         self._sig_rect.pos = inst.pos
         self._sig_rect.size = inst.size
+
+    def _dismiss_crash(self):
+        self._last_crash = None
+        self._build_main_ui()
 
     def _update_text_size(self,inst,val):
         inst.text_size=(inst.width,None)
@@ -219,9 +237,12 @@ class AppUI(BoxLayout):
         self.run()
 
     def manual_refresh(self):
+        """Az overlay 'Elemzés' gombja hívja - egyszeri friss elemzés."""
         Clock.schedule_once(lambda dt: self.run())
 
     def setup_roi(self,*_):
+        """A 'TERÜLET BEÁLL.' gomb: egy friss képkockát kér, majd megnyitja
+        a kijelölő képernyőt, hogy a chart pontos helyét be lehessen jelölni."""
         if not ANDROID or ScreenCapture is None:
             self.note.text="A terület beállítása csak a telepített Android appban működik."
             return
