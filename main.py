@@ -10,6 +10,7 @@ from kivy.uix.button import Button
 from kivy.graphics import Color, Rectangle
 
 from chart_adapter import extract_candles
+from roi_selector import ROISelector, load_roi, save_roi, DEFAULT_ROI
 try:
     from android_capture import ScreenCapture, ANDROID
 except Exception:
@@ -104,7 +105,6 @@ def analyze(c):
     if "BEARISH" in p or p=="SHOOTING STAR":score-=7
     if last>sup and last<(sup+(s-sup)*.2):score+=3
     if last<s and last>(s-(s-sup)*.2):score-=3
-    # ADX szűrő: gyenge trendnél (oldalazó piac) tompítjuk a jelet
     if adxv<18:
         score=50+(score-50)*0.3
         reasons.append("gyenge trend (ADX alacsony)")
@@ -130,7 +130,14 @@ class AppUI(BoxLayout):
         self.live=False
         self.capture=None
         self.overlay = FloatingSignal(on_analyze=self.manual_refresh) if FloatingSignal else None
+        self._awaiting_roi_frame=False
+        self._data_dir = App.get_running_app().user_data_dir
+        self.roi = load_roi(self._data_dir)
+        self._build_main_ui()
+        self.sim()
 
+    def _build_main_ui(self):
+        self.clear_widgets()
         self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(22),size_hint_y=None,height=dp(44)))
 
         self.signal_bar = BoxLayout(size_hint_y=None, height=dp(70))
@@ -152,13 +159,16 @@ class AppUI(BoxLayout):
         self.add_widget(row1)
 
         row2=GridLayout(cols=3,size_hint_y=None,height=dp(52),spacing=dp(4))
-        for t,f in [("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
-            b=Button(text=t,font_size=sp(13));b.bind(on_release=f);row2.add_widget(b)
+        for t,f in [("TERÜLET BEÁLL.",self.setup_roi),("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS"))]:
+            b=Button(text=t,font_size=sp(12));b.bind(on_release=f);row2.add_widget(b)
         self.add_widget(row2)
+
+        row3=GridLayout(cols=1,size_hint_y=None,height=dp(52),spacing=dp(4))
+        b=Button(text="NULL",font_size=sp(13));b.bind(on_release=lambda *_:self.mark("NULL"));row3.add_widget(b)
+        self.add_widget(row3)
 
         self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(36))
         self.add_widget(self.note)
-        self.sim()
 
     def _sync_rect(self, inst, val):
         self._sig_rect.pos = inst.pos
@@ -192,7 +202,11 @@ class AppUI(BoxLayout):
         self.note.text="Élő mód: engedélyt kérünk a képernyőrögzítéshez…"
 
     def _on_frame(self, pil_image):
-        candles = extract_candles(pil_image)
+        if self._awaiting_roi_frame:
+            self._awaiting_roi_frame = False
+            Clock.schedule_once(lambda dt: self.open_roi_selector(pil_image))
+            return
+        candles = extract_candles(pil_image, roi=self.roi)
         if candles:
             for cndl in candles[-5:]:
                 if cndl not in self.c:
@@ -205,8 +219,32 @@ class AppUI(BoxLayout):
         self.run()
 
     def manual_refresh(self):
-        """Az overlay 'Elemzés' gombja hívja - egyszeri friss elemzés."""
         Clock.schedule_once(lambda dt: self.run())
+
+    def setup_roi(self,*_):
+        if not ANDROID or ScreenCapture is None:
+            self.note.text="A terület beállítása csak a telepített Android appban működik."
+            return
+        self._awaiting_roi_frame = True
+        if not self.live:
+            self.toggle_live()
+        else:
+            self.note.text="Várakozás a következő képkockára a beállításhoz…"
+
+    def open_roi_selector(self, pil_image):
+        selector = ROISelector(pil_image, on_save=self.on_roi_saved, on_cancel=self.close_roi_selector)
+        self.clear_widgets()
+        self.add_widget(selector)
+
+    def on_roi_saved(self, roi):
+        self.roi = roi
+        save_roi(self._data_dir, roi)
+        self._build_main_ui()
+        self.note.text=f"Terület elmentve: {[round(v,2) for v in roi]}"
+
+    def close_roi_selector(self):
+        self._build_main_ui()
+        self.note.text="Terület beállítása megszakítva."
 
     def toggle_overlay(self,*_):
         if not self.overlay:
