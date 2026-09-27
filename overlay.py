@@ -14,6 +14,15 @@ except Exception:
     def run_on_ui_thread(f):
         return f
 
+try:
+    import crash_logger
+except Exception:
+    crash_logger = None
+
+def _safe_log(context):
+    if crash_logger:
+        crash_logger.log_exception(context)
+
 BG_MAP = {
     "UP":   0xFF184D22,
     "DOWN": 0xFF4D1814,
@@ -181,7 +190,10 @@ if ANDROID:
 
         @java_method('(Landroid/view/View;)V')
         def onClick(self, v):
-            self.callback()
+            try:
+                self.callback()
+            except Exception:
+                _safe_log("overlay onClick")
 
     class _DragTouchListener(PythonJavaClass):
         __javainterfaces__ = ['android/view/View$OnTouchListener']
@@ -197,20 +209,24 @@ if ANDROID:
 
         @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
         def onTouch(self, v, event):
-            MotionEvent = autoclass('android.view.MotionEvent')
-            action = event.getAction()
-            if action == MotionEvent.ACTION_DOWN:
-                self.start_x = self.params.x
-                self.start_y = self.params.y
-                self.touch_x = event.getRawX()
-                self.touch_y = event.getRawY()
+            try:
+                MotionEvent = autoclass('android.view.MotionEvent')
+                action = event.getAction()
+                if action == MotionEvent.ACTION_DOWN:
+                    self.start_x = self.params.x
+                    self.start_y = self.params.y
+                    self.touch_x = event.getRawX()
+                    self.touch_y = event.getRawY()
+                    return False
+                elif action == MotionEvent.ACTION_MOVE:
+                    dx = event.getRawX() - self.touch_x
+                    dy = event.getRawY() - self.touch_y
+                    if abs(dx) > 8 or abs(dy) > 8:
+                        self.params.x = int(self.start_x + dx)
+                        self.params.y = int(self.start_y + dy)
+                        self.owner._wm.updateViewLayout(self.view, self.params)
+                        return True
                 return False
-            elif action == MotionEvent.ACTION_MOVE:
-                dx = event.getRawX() - self.touch_x
-                dy = event.getRawY() - self.touch_y
-                if abs(dx) > 8 or abs(dy) > 8:
-                    self.params.x = int(self.start_x + dx)
-                    self.params.y = int(self.start_y + dy)
-                    self.owner._wm.updateViewLayout(self.view, self.params)
-                    return True
-            return False
+            except Exception:
+                _safe_log("overlay onTouch")
+                return False

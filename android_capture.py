@@ -66,6 +66,10 @@ class ScreenCapture:
 
     def _loop(self, width, height):
         from PIL import Image
+        try:
+            import crash_logger
+        except Exception:
+            crash_logger = None
         while self._running:
             try:
                 img = self._image_reader.acquireLatestImage()
@@ -74,6 +78,7 @@ class ScreenCapture:
                     buf = planes[0].getBuffer()
                     pixel_stride = planes[0].getPixelStride()
                     row_stride = planes[0].getRowStride()
+                    row_padding = row_stride - pixel_stride * width
                     remaining = buf.remaining()
                     raw = bytes(bytearray(remaining))
                     buf.get(raw)
@@ -86,6 +91,8 @@ class ScreenCapture:
                         self.on_frame(im)
             except Exception as e:
                 print("ScreenCapture error:", e)
+                if crash_logger:
+                    crash_logger.log_exception("ScreenCapture _loop")
             time.sleep(self.interval)
 
     def stop(self):
