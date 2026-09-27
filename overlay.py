@@ -108,27 +108,29 @@ class FloatingSignal:
         self._params.x = dp_to_px(16)
         self._params.y = dp_to_px(120)
 
-        self._card = LinearLayout(mActivity)
+        app_context = mActivity.getApplicationContext()
+
+        self._card = LinearLayout(app_context)
         self._card.setOrientation(LinearLayout.VERTICAL)
         bg = GradientDrawable(); bg.setColor(_s32(0xF0141418)); bg.setCornerRadius(dp_to_px(14))
         self._card.setBackground(bg)
         pad = dp_to_px(10)
         self._card.setPadding(pad, pad, pad, pad)
 
-        self._score_text = TextView(mActivity)
+        self._score_text = TextView(app_context)
         self._score_text.setText(_jstr("⚪ VÁRAKOZÁS  50/100"))
         self._score_text.setTextColor(_s32(TEXT_MAP["WAIT"]))
         self._score_text.setTextSize(16)
         self._card.addView(self._score_text)
 
-        self._detail_text = TextView(mActivity)
+        self._detail_text = TextView(app_context)
         self._detail_text.setText(_jstr("Minőség: -  •  Minta: -"))
         self._detail_text.setTextColor(_s32(0xFFAAAAB0))
         self._detail_text.setTextSize(11)
         self._detail_text.setPadding(0, dp_to_px(4), 0, dp_to_px(8))
         self._card.addView(self._detail_text)
 
-        analyze_btn = Button(mActivity)
+        analyze_btn = Button(app_context)
         analyze_btn.setText(_jstr("Elemzés"))
         analyze_btn.setTextSize(13)
         analyze_btn.setAllCaps(False)
@@ -139,7 +141,7 @@ class FloatingSignal:
 
         self._set_card_bg("WAIT")
 
-        self._wm = mActivity.getSystemService(Context.WINDOW_SERVICE)
+        self._wm = app_context.getSystemService(Context.WINDOW_SERVICE)
         self._wm.addView(self._card, self._params)
         self._visible = True
 
