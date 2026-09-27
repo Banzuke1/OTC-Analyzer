@@ -137,6 +137,7 @@ class AppUI(BoxLayout):
         self._data_dir = App.get_running_app().user_data_dir
         self.roi = load_roi(self._data_dir)
         self._last_crash = crash_logger.read_and_clear()
+        self.app_active=True
         self._build_main_ui()
         self.sim()
 
@@ -286,11 +287,16 @@ class AppUI(BoxLayout):
 
     def run(self,*_):
         self.last=analyze(list(self.c));a=self.last
+
+        if self.overlay and self.overlay._visible:
+            self.overlay.update(a["direction"], a["score"], a.get("quality","-"), a.get("pattern","-"))
+
+        if not self.app_active:
+            return
+
         col = SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
         self._sig_color.rgba = col
         self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
-        if self.overlay and self.overlay._visible:
-            self.overlay.update(a["direction"], a["score"], a.get("quality","-"), a.get("pattern","-"))
         self.out.text=(f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n"
           f"MINŐSÉG: {a.get('quality','-')}   |   ADX: {a.get('adx',0):.1f}\n\n"
           f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
@@ -317,5 +323,14 @@ class AppUI(BoxLayout):
 
 class OTCAnalyzerApp(App):
     def build(self): return AppUI()
+
+    def on_pause(self):
+        if self.root: self.root.app_active = False
+        return True
+
+    def on_resume(self):
+        if self.root:
+            self.root.app_active = True
+            self.root.run()
 
 if __name__=="__main__": OTCAnalyzerApp().run()
