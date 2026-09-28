@@ -45,3 +45,5 @@ jobs:
           name: OTC-Analyzer-APK
           path: bin/*.apk
           if-no-files-found: error
+
+          

@@ -1,4 +1,4 @@
-import os, csv, time, math, random
+import os, csv, time, random, threading
 from collections import deque
 from kivy.app import App
 from kivy.clock import Clock
@@ -13,7 +13,7 @@ import crash_logger
 crash_logger.install()
 
 from chart_adapter import extract_candles
-from roi_selector import ROISelector, load_roi, save_roi, DEFAULT_ROI
+from roi_selector import ROISelector, load_roi, save_roi
 try:
     from android_capture import ScreenCapture, ANDROID
 except Exception:
@@ -23,7 +23,6 @@ try:
 except Exception:
     FloatingSignal = None
 
-LOG=os.path.join(os.path.dirname(__file__),"signal_log.csv")
 
 def ema(x,n):
     if not x:return 0.0
@@ -65,9 +64,9 @@ def adx(c,n=14):
         dx_values.append(100*abs(pdi-mdi)/denom if denom else 0.0)
     return sum(dx_values[-n:])/min(n,len(dx_values)) if dx_values else 0.0
 
-def quality_label(adx_val):
-    if adx_val>=25:return "MAGAS"
-    if adx_val>=18:return "KÖZEPES"
+def quality_label(v):
+    if v>=25:return "MAGAS"
+    if v>=18:return "KÖZEPES"
     return "ALACSONY"
 
 def support(c,n=30):
@@ -126,34 +125,39 @@ SIGNAL_COLORS = {
     "WAIT": (0.35, 0.35, 0.38, 1),
 }
 
+
 class AppUI(BoxLayout):
     def __init__(self,**kw):
         super().__init__(orientation="vertical",padding=dp(8),spacing=dp(6),**kw)
         self.c=deque(maxlen=300); self.last=None
         self.live=False
-        self.capture=None
+        self.source="SZIM"
+        self.app_active=True
+        self._awaiting_roi=False
+        self._pending_roi_frame=None
+        self.diag_lines=deque(maxlen=7)
+        self.capture = ScreenCapture(on_frame=self._on_frame, interval=5.0) if (ANDROID and ScreenCapture) else None
         self.overlay = FloatingSignal(on_analyze=self.manual_refresh) if FloatingSignal else None
-        self._awaiting_roi_frame=False
         self._data_dir = App.get_running_app().user_data_dir
         self.roi = load_roi(self._data_dir)
         self._last_crash = crash_logger.read_and_clear()
-        self.app_active=True
         self._build_main_ui()
         self.sim()
+        Clock.schedule_interval(self._poll_capture, 0.7)
 
+    # ---------- felület ----------
     def _build_main_ui(self):
         self.clear_widgets()
         self.add_widget(Label(text="OTC ANALYZER COMPLETE",font_size=sp(22),size_hint_y=None,height=dp(44)))
         if self._last_crash:
-            crash_lbl = Label(text="ELŐZŐ ÖSSZEOMLÁS:\n"+self._last_crash[-1200:],
-                               font_size=sp(10), halign="left", valign="top",
-                               size_hint_y=None, color=(1,0.5,0.5,1))
-            crash_lbl.bind(width=lambda i,v: setattr(i,"text_size",(v,None)))
-            crash_lbl.bind(texture_size=lambda i,v: setattr(i,"height",v[1]))
-            self.add_widget(crash_lbl)
-            dismiss = Button(text="Hiba törlése",size_hint_y=None,height=dp(40))
-            dismiss.bind(on_release=lambda *_: self._dismiss_crash())
-            self.add_widget(dismiss)
+            cl = Label(text="ELŐZŐ ÖSSZEOMLÁS:\n"+self._last_crash[-1200:], font_size=sp(10),
+                       halign="left", valign="top", size_hint_y=None, color=(1,0.5,0.5,1))
+            cl.bind(width=lambda i,v: setattr(i,"text_size",(v,None)))
+            cl.bind(texture_size=lambda i,v: setattr(i,"height",v[1]))
+            self.add_widget(cl)
+            d = Button(text="Hiba törlése",size_hint_y=None,height=dp(40))
+            d.bind(on_release=lambda *_: self._dismiss_crash())
+            self.add_widget(d)
 
         self.signal_bar = BoxLayout(size_hint_y=None, height=dp(70))
         with self.signal_bar.canvas.before:
@@ -164,40 +168,64 @@ class AppUI(BoxLayout):
         self.signal_bar.add_widget(self.signal_label)
         self.add_widget(self.signal_bar)
 
-        self.out=Label(text="",halign="left",valign="top",font_size=sp(16))
+        self.out=Label(text="",halign="left",valign="top",font_size=sp(15))
         self.out.bind(size=self._update_text_size)
         self.add_widget(self.out)
 
-        row1=GridLayout(cols=3,size_hint_y=None,height=dp(52),spacing=dp(4))
+        self.diag=Label(text="\n".join(self.diag_lines),halign="left",valign="top",font_size=sp(10),
+                        size_hint_y=None,height=dp(95),color=(0.6,0.9,1,1))
+        self.diag.bind(size=self._update_text_size)
+        self.add_widget(self.diag)
+
+        row1=GridLayout(cols=3,size_hint_y=None,height=dp(50),spacing=dp(4))
         for t,f in [("SZIMULÁCIÓ",self.sim),("ÉLŐ MÓD",self.toggle_live),("OVERLAY",self.toggle_overlay)]:
             b=Button(text=t,font_size=sp(13));b.bind(on_release=f);row1.add_widget(b)
         self.add_widget(row1)
 
-        row2=GridLayout(cols=3,size_hint_y=None,height=dp(52),spacing=dp(4))
-        for t,f in [("TERÜLET BEÁLL.",self.setup_roi),("WIN",lambda *_:self.mark("WIN")),("LOSS",lambda *_:self.mark("LOSS"))]:
+        row2=GridLayout(cols=4,size_hint_y=None,height=dp(50),spacing=dp(4))
+        for t,f in [("TERÜLET",self.setup_roi),("WIN",lambda *_:self.mark("WIN")),
+                    ("LOSS",lambda *_:self.mark("LOSS")),("NULL",lambda *_:self.mark("NULL"))]:
             b=Button(text=t,font_size=sp(12));b.bind(on_release=f);row2.add_widget(b)
         self.add_widget(row2)
 
-        row3=GridLayout(cols=1,size_hint_y=None,height=dp(52),spacing=dp(4))
-        b=Button(text="NULL",font_size=sp(13));b.bind(on_release=lambda *_:self.mark("NULL"));row3.add_widget(b)
-        self.add_widget(row3)
-
-        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(12),size_hint_y=None,height=dp(36))
+        self.note=Label(text="DEMO/OKTATÁSI MÓD • nincs automatikus kötés",font_size=sp(11),
+                        size_hint_y=None,height=dp(44))
+        self.note.bind(size=self._update_text_size)
         self.add_widget(self.note)
 
     def _sync_rect(self, inst, val):
         self._sig_rect.pos = inst.pos
         self._sig_rect.size = inst.size
 
-    def _dismiss_crash(self):
-        self._last_crash = None
-        self._build_main_ui()
-
     def _update_text_size(self,inst,val):
         inst.text_size=(inst.width,None)
 
+    def _dismiss_crash(self):
+        self._last_crash=None
+        self._build_main_ui()
+        self._refresh_widgets()
+
+    # ---------- diagnosztika ----------
+    def _poll_capture(self, dt):
+        if not self.capture: return
+        new=[]
+        while True:
+            try: new.append(self.capture.messages.popleft())
+            except IndexError: break
+        if not new: return
+        for m in new: self.diag_lines.append(m)
+        if self.overlay and self.overlay._visible:
+            self.overlay.set_info(new[-1])
+        if self.app_active:
+            self.diag.text="\n".join(self.diag_lines)
+
+    def _msg(self, text):
+        if self.capture: self.capture.messages.append(text)
+
+    # ---------- adatforrás ----------
     def sim(self,*_):
         if self.live: self.toggle_live()
+        self.source="SZIM"
         self.c.clear(); p=1.1700
         for _ in range(120):
             o=p; d=random.gauss(0,0.00022);cl=max(.0001,o+d)
@@ -206,68 +234,78 @@ class AppUI(BoxLayout):
         self.run()
 
     def toggle_live(self,*_):
-        if not ANDROID or ScreenCapture is None:
+        if not self.capture:
             self.note.text="Élő mód csak a telepített Android appban működik."
             return
         if self.live:
             self.live=False
-            if self.capture: self.capture.stop()
+            self.capture.stop()
+            self.source="SZIM"
             self.note.text="Élő mód leállítva."
             return
-        self.c.clear()
-        self.capture = ScreenCapture(on_frame=self._on_frame, interval=5.0)
-        self.capture.request_permission()
-        self.live=True
-        self.note.text="Élő mód: engedélyt kérünk a képernyőrögzítéshez…"
+        self.c.clear(); self.source="ÉLŐ"; self.live=True
+        try:
+            self.capture.start()
+            self.note.text="Élő mód: engedélyezd a képernyőmegosztást (teljes képernyő)."
+        except Exception as e:
+            self.live=False
+            self.note.text=f"HIBA: {e}"
 
     def _on_frame(self, pil_image):
-        if self._awaiting_roi_frame:
-            self._awaiting_roi_frame = False
-            Clock.schedule_once(lambda dt: self.open_roi_selector(pil_image))
+        """Rögzítő háttérszálról hívódik."""
+        if self._awaiting_roi:
+            self._awaiting_roi=False
+            self._pending_roi_frame=pil_image
+            Clock.schedule_once(lambda dt: self._open_pending_roi())
             return
         candles = extract_candles(pil_image, roi=self.roi)
+        self._msg(f"Képkocka: {len(candles)} gyertya felismerve")
         if candles:
-            for cndl in candles[-5:]:
-                if cndl not in self.c:
-                    self.c.append(cndl)
-        status = f"Élő mód aktív • {len(candles)} gyertya a képen • {len(self.c)} eltárolva"
-        Clock.schedule_once(lambda dt: self._update_live_status(status))
-
-    def _update_live_status(self, status):
-        self.note.text = status
-        self.run()
+            self.c = deque(candles, maxlen=300)
+        self.compute()
+        Clock.schedule_once(lambda dt: self._refresh_widgets())
 
     def manual_refresh(self):
-        """Az overlay 'Elemzés' gombja hívja - egyszeri friss elemzés."""
-        Clock.schedule_once(lambda dt: self.run())
-
-    def setup_roi(self,*_):
-        """A 'TERÜLET BEÁLL.' gomb: egy friss képkockát kér, majd megnyitja
-        a kijelölő képernyőt, hogy a chart pontos helyét be lehessen jelölni."""
-        if not ANDROID or ScreenCapture is None:
-            self.note.text="A terület beállítása csak a telepített Android appban működik."
-            return
-        self._awaiting_roi_frame = True
-        if not self.live:
-            self.toggle_live()
+        """Az overlay 'Elemzés' gombja hívja (háttérszálról)."""
+        if self.live and self.capture and self.capture.running:
+            if self.overlay: self.overlay.set_info("Új képkocka kérése…")
+            self.capture.request_frame()
         else:
-            self.note.text="Várakozás a következő képkockára a beállításhoz…"
+            self.compute()
+            if self.overlay: self.overlay.set_info(f"{self.source}: nincs élő rögzítés")
+            Clock.schedule_once(lambda dt: self._refresh_widgets())
 
-    def open_roi_selector(self, pil_image):
-        selector = ROISelector(pil_image, on_save=self.on_roi_saved, on_cancel=self.close_roi_selector)
+    # ---------- terület kijelölés ----------
+    def setup_roi(self,*_):
+        if not (self.live and self.capture and self.capture.running):
+            self.note.text="Előbb indítsd az ÉLŐ MÓD-ot és engedélyezd, majd nyomd meg újra."
+            return
+        self.note.text="Válts a Pocket Optionre! 7 mp múlva képet rögzítek, utána gyere vissza."
+        threading.Timer(7.0, self._arm_roi).start()
+
+    def _arm_roi(self):
+        self._awaiting_roi=True
+        if self.capture: self.capture.request_frame()
+
+    def _open_pending_roi(self):
+        if self._pending_roi_frame is None or not self.app_active:
+            return
+        frame=self._pending_roi_frame
+        self._pending_roi_frame=None
         self.clear_widgets()
-        self.add_widget(selector)
+        self.add_widget(ROISelector(frame, on_save=self.on_roi_saved, on_cancel=self.close_roi_selector))
 
     def on_roi_saved(self, roi):
-        self.roi = roi
+        self.roi=roi
         save_roi(self._data_dir, roi)
-        self._build_main_ui()
+        self._build_main_ui(); self._refresh_widgets()
         self.note.text=f"Terület elmentve: {[round(v,2) for v in roi]}"
 
     def close_roi_selector(self):
-        self._build_main_ui()
+        self._build_main_ui(); self._refresh_widgets()
         self.note.text="Terület beállítása megszakítva."
 
+    # ---------- overlay ----------
     def toggle_overlay(self,*_):
         if not self.overlay:
             self.note.text="Overlay csak a telepített Android appban működik."
@@ -280,57 +318,64 @@ class AppUI(BoxLayout):
                 self.overlay.show()
                 self.note.text="Overlay parancs elküldve (ha engedély kell, engedélyezd, majd nyomd meg újra)."
         except Exception as e:
-            import traceback
-            err = traceback.format_exc()
-            print("OVERLAY HIBA:", err)
-            self.note.text=f"OVERLAY HIBA: {type(e).__name__}: {str(e)[:200]}"
+            self.note.text=f"OVERLAY HIBA: {type(e).__name__}: {str(e)[:150]}"
+
+    # ---------- elemzés ----------
+    def compute(self):
+        """Tiszta számítás + overlay frissítés - háttérszálról is biztonságos."""
+        a=analyze(list(self.c))
+        self.last=a
+        if self.overlay and self.overlay._visible:
+            self.overlay.update(a["direction"], a["score"], a.get("quality","-"),
+                                a.get("pattern","-"), f"{self.source} {len(self.c)}db")
+        return a
 
     def run(self,*_):
-        self.last=analyze(list(self.c));a=self.last
+        self.compute()
+        self._refresh_widgets()
 
-        if self.overlay and self.overlay._visible:
-            self.overlay.update(a["direction"], a["score"], a.get("quality","-"), a.get("pattern","-"))
-
-        if not self.app_active:
+    def _refresh_widgets(self):
+        """Csak a Kivy felületet frissíti, és csak ha az app előtérben van."""
+        a=self.last
+        if not self.app_active or not a:
             return
-
-        col = SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
-        self._sig_color.rgba = col
-        self.signal_label.text = {"UP":"🟢 BUY / UP","DOWN":"🔴 SELL / DOWN","WAIT":"⚪ VÁRAKOZÁS"}[a["direction"]]
-        self.out.text=(f"MODEL SCORE: {a['score']}/100   |   CONFIDENCE: {a['confidence']}%\n"
-          f"MINŐSÉG: {a.get('quality','-')}   |   ADX: {a.get('adx',0):.1f}\n\n"
-          f"EMA 9/21/50: {a.get('ema',('-','-','-'))}\n"
-          f"RSI(14): {a.get('rsi',50):.1f}\n"
-          f"Momentum: {a.get('momentum',0):.3f}%\n"
-          f"ATR: {a.get('atr',0):.6f}\n"
-          f"Support: {a.get('support',0):.5f}\n"
-          f"Resistance: {a.get('resistance',0):.5f}\n"
-          f"Pattern: {a.get('pattern','-')}\n\n"
+        self._sig_color.rgba=SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
+        self.signal_label.text={"UP":"BUY / UP","DOWN":"SELL / DOWN","WAIT":"VÁRAKOZÁS"}[a["direction"]]
+        self.out.text=(f"ADATFORRÁS: {self.source}  ({len(self.c)} gyertya)\n"
+          f"SCORE: {a['score']}/100  |  CONFIDENCE: {a['confidence']}%\n"
+          f"MINŐSÉG: {a.get('quality','-')}  |  ADX: {a.get('adx',0):.1f}\n"
+          f"RSI(14): {a.get('rsi',50):.1f}  |  Momentum: {a.get('momentum',0):.3f}%\n"
+          f"Pattern: {a.get('pattern','-')}\n"
           f"Faktorok: {a.get('reason','-')}")
+
+    def on_app_resume(self):
+        self.app_active=True
+        if self._pending_roi_frame is not None:
+            self._open_pending_roi()
+        else:
+            self._refresh_widgets()
 
     def mark(self,result):
         if not self.last:return
-        exists=os.path.exists(LOG)
-        with open(LOG,"a",newline="",encoding="utf-8") as f:
+        path=os.path.join(self._data_dir,"signal_log.csv")
+        exists=os.path.exists(path)
+        with open(path,"a",newline="",encoding="utf-8") as f:
             w=csv.writer(f)
-            if not exists:w.writerow(["timestamp","direction","score","confidence","rsi","momentum","atr","adx","quality","pattern","result"])
-            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),
-                        self.last["direction"],self.last["score"],self.last["confidence"],
-                        round(self.last.get("rsi",50),2),round(self.last.get("momentum",0),5),
-                        round(self.last.get("atr",0),8),round(self.last.get("adx",0),2),
-                        self.last.get("quality",""),self.last.get("pattern",""),result])
+            if not exists:w.writerow(["timestamp","source","direction","score","rsi","adx","quality","pattern","result"])
+            a=self.last
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),self.source,a["direction"],a["score"],
+                        round(a.get("rsi",50),2),round(a.get("adx",0),2),a.get("quality",""),a.get("pattern",""),result])
         self.note.text=f"Eredmény elmentve: {result}"
+
 
 class OTCAnalyzerApp(App):
     def build(self): return AppUI()
 
     def on_pause(self):
-        if self.root: self.root.app_active = False
+        if self.root: self.root.app_active=False
         return True
 
     def on_resume(self):
-        if self.root:
-            self.root.app_active = True
-            self.root.run()
+        if self.root: self.root.on_app_resume()
 
 if __name__=="__main__": OTCAnalyzerApp().run()

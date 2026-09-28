@@ -1,0 +1,10 @@
+BOOTSTRAP = 'sdl2'
+IS_SDL2 = 1
+IS_SDL3 = 0
+PY2 = 0
+ANDROID_LIBS_DIR = '/workspaces/OTC-Analyzer/.buildozer/android/platform/build-arm64-v8a/build/libs_collections/otcanalyzer/arm64-v8a:/workspaces/OTC-Analyzer/.buildozer/android/platform/build-arm64-v8a/build/bootstrap_builds/sdl2/obj/local/arm64-v8a'
+JAVA_NAMESPACE = 'org.kivy.android'
+JNI_NAMESPACE = 'org/kivy/android'
+ACTIVITY_CLASS_NAME = 'org.kivy.android.PythonActivity'
+ACTIVITY_CLASS_NAMESPACE = 'org/kivy/android/PythonActivity'
+SERVICE_CLASS_NAME = 'org.kivy.android.PythonService'

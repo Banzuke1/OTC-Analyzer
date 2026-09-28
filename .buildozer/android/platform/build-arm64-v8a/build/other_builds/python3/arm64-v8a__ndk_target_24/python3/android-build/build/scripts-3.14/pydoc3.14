@@ -1,0 +1,5 @@
+#!/workspaces/OTC-Analyzer/.buildozer/android/platform/build-arm64-v8a/build/other_builds/python3/arm64-v8a__ndk_target_24/python3/android-build/android-root/bin/python3.14
+
+import pydoc
+if __name__ == '__main__':
+    pydoc.cli()

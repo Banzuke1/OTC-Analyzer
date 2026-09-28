@@ -1,0 +1,8 @@
+certifi
+chardet
+filetype
+idna
+requests
+six
+urllib3
+https://files.pythonhosted.org/packages/29/cd/2b812ce5e888f1ce69a5350281e58aab07ae64a958ecae8912f30865718e/charset_normalizer-3.5.1-cp314-cp314-android_24_arm64_v8a.whl
