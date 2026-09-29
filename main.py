@@ -366,17 +366,27 @@ class AppUI(BoxLayout):
 
     # ---------- elemzés ----------
     def compute(self):
-        """Tiszta számítás + overlay frissítés - háttérszálról is biztonságos.
-        A legutolsó gyertyát kihagyjuk, mert élő módban az még formálódik,
-        nincs lezárva - ennek belevétele zajos/idő előtti jelet adna."""
+        """A trendet a LEZÁRT gyertyákból számoljuk (stabil), de a most
+        formálódó gyertyát megerősítésként megnézzük: ha az ellentétesen
+        mozog a trenddel, WAIT-re váltunk - így a legfrissebb mozgás is
+        számít, de nem villogtatja a jelet."""
         candles=list(self.c)
+        closed=candles; forming=None
         if self.source=="ÉLŐ" and len(candles)>21:
-            candles=candles[:-1]
-        a=analyze(candles)
+            closed=candles[:-1]
+            forming=candles[-1]
+        a=analyze(closed)
+        if forming and a["direction"] in ("UP","DOWN"):
+            fo,fh,fl,fc=forming
+            forming_dir="UP" if fc>fo else "DOWN" if fc<fo else "WAIT"
+            a["forming_bias"]=forming_dir
+            if forming_dir!="WAIT" and forming_dir!=a["direction"]:
+                a["direction"]="WAIT"
+                a["reason"]+=", de a jelenlegi (nyitott) gyertya ellenkező irányba mozog"
         self.last=a
         if self.overlay and self.overlay._visible:
             self.overlay.update(a["direction"], a["score"], a.get("quality","-"),
-                                a.get("pattern","-"), f"{self.source} {len(candles)}db (zárt)")
+                                a.get("pattern","-"), f"{self.source} {len(closed)}+1db")
         return a
 
     def run(self,*_):
