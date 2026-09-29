@@ -8,13 +8,12 @@ version = 1.0.0
 requirements = python3==3.11.9,hostpython3==3.11.9,kivy,pillow,android
 orientation = portrait
 fullscreen = 0
-android.api = 35
+android.api = 33
 android.minapi = 24
 android.archs = arm64-v8a
 android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MEDIA_PROJECTION,SYSTEM_ALERT_WINDOW
 android.accept_sdk_license = True
 services = capture:service.py:foreground:foregroundServiceType=mediaProjection
-android.add_src = java_src
 
 [buildozer]
 log_level = 2
