@@ -1,2 +1,0 @@
-# Frozen Sphinx requirements for easier pip installation
-
