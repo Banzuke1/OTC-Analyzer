@@ -69,6 +69,35 @@ def quality_label(v):
     if v>=18:return "KÖZEPES"
     return "ALACSONY"
 
+def _ema_series(vals,n):
+    if not vals:return []
+    a=2/(n+1); out=[vals[0]]
+    for v in vals[1:]:out.append(a*v+(1-a)*out[-1])
+    return out
+
+def macd(closes,fast=12,slow=26,signal=9):
+    if len(closes)<slow+signal:return 0.0,0.0,0.0
+    ef=_ema_series(closes,fast); es=_ema_series(closes,slow)
+    macd_line=[f-s for f,s in zip(ef,es)]
+    sig=_ema_series(macd_line,signal)
+    return macd_line[-1], sig[-1], macd_line[-1]-sig[-1]
+
+def stochastic(c,n=14,d=3):
+    if len(c)<n+d:return 50.0,50.0
+    closes=[x[3] for x in c]; highs=[x[1] for x in c]; lows=[x[2] for x in c]
+    kv=[]
+    for i in range(n,len(c)+1):
+        hh=max(highs[i-n:i]); ll=min(lows[i-n:i])
+        kv.append(100*(closes[i-1]-ll)/max(hh-ll,1e-9))
+    return kv[-1], sum(kv[-d:])/min(d,len(kv))
+
+def bollinger(closes,n=20,mult=2.0):
+    if len(closes)<n:return 0.0,0.0,0.0
+    window=closes[-n:]; mid=sum(window)/n
+    var=sum((x-mid)**2 for x in window)/n
+    sd=var**0.5
+    return mid-mult*sd, mid, mid+mult*sd
+
 def support(c,n=30):
     return min(x[2] for x in c[-n:]) if c else 0
 
@@ -92,19 +121,26 @@ def analyze(c):
     closes=[x[3] for x in c]
     e9,e21,e50=ema(closes,9),ema(closes,21),ema(closes,50)
     rr=rsi(closes); aa=atr(c); adxv=adx(c)
+    macd_l,macd_s,macd_h=macd(closes)
+    stoch_k,stoch_d=stochastic(c)
     mom=(closes[-1]-closes[-5])/max(abs(closes[-5]),1e-9)*100
     s=resistance(c); sup=support(c); last=closes[-1]
-    score=50; reasons=[]
-    if e9>e21:score+=12;reasons.append("EMA9>EMA21")
-    else:score-=12;reasons.append("EMA9<EMA21")
-    if e21>e50:score+=10;reasons.append("középtáv UP")
-    else:score-=10;reasons.append("középtáv DOWN")
-    if rr>55:score+=10;reasons.append("RSI bullish")
-    elif rr<45:score-=10;reasons.append("RSI bearish")
+    score=50; reasons=[]; up_votes=0; down_votes=0
+
+    if e9>e21:score+=12;reasons.append("EMA9>EMA21");up_votes+=1
+    else:score-=12;reasons.append("EMA9<EMA21");down_votes+=1
+    if e21>e50:score+=10;reasons.append("középtáv UP");up_votes+=1
+    else:score-=10;reasons.append("középtáv DOWN");down_votes+=1
+    if rr>55:score+=10;reasons.append("RSI bullish");up_votes+=1
+    elif rr<45:score-=10;reasons.append("RSI bearish");down_votes+=1
+    if macd_h>0:score+=8;reasons.append("MACD bullish");up_votes+=1
+    elif macd_h<0:score-=8;reasons.append("MACD bearish");down_votes+=1
+    if stoch_k>stoch_d and stoch_k<80:score+=6;reasons.append("Stoch bullish");up_votes+=1
+    elif stoch_k<stoch_d and stoch_k>20:score-=6;reasons.append("Stoch bearish");down_votes+=1
     score+=max(-10,min(10,mom*45))
     p=pattern(c)
-    if "BULLISH" in p or p=="HAMMER":score+=7
-    if "BEARISH" in p or p=="SHOOTING STAR":score-=7
+    if "BULLISH" in p or p=="HAMMER":score+=7;up_votes+=1
+    if "BEARISH" in p or p=="SHOOTING STAR":score-=7;down_votes+=1
     if last>sup and last<(sup+(s-sup)*.2):score+=3
     if last<s and last>(s-(s-sup)*.2):score-=3
     if adxv<18:
@@ -113,10 +149,20 @@ def analyze(c):
     elif adxv>=25:
         reasons.append("erős trend (ADX magas)")
     score=max(0,min(100,round(score)))
-    direction="UP" if score>=60 else "DOWN" if score<=40 else "WAIT"
+
+    if score>=60 and up_votes>=down_votes+2:
+        direction="UP"
+    elif score<=40 and down_votes>=up_votes+2:
+        direction="DOWN"
+    else:
+        direction="WAIT"
+        if score>=60 or score<=40:
+            reasons.append("nincs elég megerősítés (ellentmondó mutatók)")
+
     return {"direction":direction,"score":score,"confidence":abs(score-50)*2,
             "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,"adx":adxv,
-            "quality":quality_label(adxv),
+            "macd":macd_h,"stoch_k":stoch_k,"stoch_d":stoch_d,
+            "quality":quality_label(adxv),"votes":f"{up_votes}▲/{down_votes}▼",
             "support":sup,"resistance":s,"pattern":p,"reason":", ".join(reasons)}
 
 SIGNAL_COLORS = {
@@ -252,28 +298,26 @@ class AppUI(BoxLayout):
             self.note.text=f"HIBA: {e}"
 
     def _on_frame(self, pil_image):
-        """Rögzítő háttérszálról hívódik."""
+        """Rögzítő háttérszálról hívódik - csak GYŰJT, nem jelez.
+        A tényleges jelzés csak az Elemzés gomb megnyomására történik."""
         if self._awaiting_roi:
             self._awaiting_roi=False
             self._pending_roi_frame=pil_image
             Clock.schedule_once(lambda dt: self._open_pending_roi())
             return
         candles = extract_candles(pil_image, roi=self.roi)
-        self._msg(f"Képkocka: {len(candles)} gyertya felismerve")
         if candles:
             self.c = deque(candles, maxlen=300)
-        self.compute()
-        Clock.schedule_once(lambda dt: self._refresh_widgets())
+        self._msg(f"Figyelés: {len(candles)} gyertya a képen (háttérben gyűjtve)")
 
     def manual_refresh(self):
-        """Az overlay 'Elemzés' gombja hívja (háttérszálról)."""
+        """Az Elemzés gomb hívja (bármelyikről). A háttérben már gyűjtött
+        gyertyákból számol, a legutolsó (még formálódó, lezáratlan)
+        gyertyát kihagyva a stabilabb jel érdekében."""
         if self.live and self.capture and self.capture.running:
-            if self.overlay: self.overlay.set_info("Új képkocka kérése…")
             self.capture.request_frame()
-        else:
-            self.compute()
-            if self.overlay: self.overlay.set_info(f"{self.source}: nincs élő rögzítés")
-            Clock.schedule_once(lambda dt: self._refresh_widgets())
+        self.compute()
+        Clock.schedule_once(lambda dt: self._refresh_widgets())
 
     # ---------- terület kijelölés ----------
     def setup_roi(self,*_):
@@ -322,12 +366,17 @@ class AppUI(BoxLayout):
 
     # ---------- elemzés ----------
     def compute(self):
-        """Tiszta számítás + overlay frissítés - háttérszálról is biztonságos."""
-        a=analyze(list(self.c))
+        """Tiszta számítás + overlay frissítés - háttérszálról is biztonságos.
+        A legutolsó gyertyát kihagyjuk, mert élő módban az még formálódik,
+        nincs lezárva - ennek belevétele zajos/idő előtti jelet adna."""
+        candles=list(self.c)
+        if self.source=="ÉLŐ" and len(candles)>21:
+            candles=candles[:-1]
+        a=analyze(candles)
         self.last=a
         if self.overlay and self.overlay._visible:
             self.overlay.update(a["direction"], a["score"], a.get("quality","-"),
-                                a.get("pattern","-"), f"{self.source} {len(self.c)}db")
+                                a.get("pattern","-"), f"{self.source} {len(candles)}db (zárt)")
         return a
 
     def run(self,*_):
@@ -342,9 +391,10 @@ class AppUI(BoxLayout):
         self._sig_color.rgba=SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
         self.signal_label.text={"UP":"BUY / UP","DOWN":"SELL / DOWN","WAIT":"VÁRAKOZÁS"}[a["direction"]]
         self.out.text=(f"ADATFORRÁS: {self.source}  ({len(self.c)} gyertya)\n"
-          f"SCORE: {a['score']}/100  |  CONFIDENCE: {a['confidence']}%\n"
+          f"SCORE: {a['score']}/100  |  CONFIDENCE: {a['confidence']}%  |  SZAVAZATOK: {a.get('votes','-')}\n"
           f"MINŐSÉG: {a.get('quality','-')}  |  ADX: {a.get('adx',0):.1f}\n"
-          f"RSI(14): {a.get('rsi',50):.1f}  |  Momentum: {a.get('momentum',0):.3f}%\n"
+          f"RSI(14): {a.get('rsi',50):.1f}  |  MACD hist: {a.get('macd',0):.5f}\n"
+          f"Stoch K/D: {a.get('stoch_k',50):.1f}/{a.get('stoch_d',50):.1f}  |  Momentum: {a.get('momentum',0):.3f}%\n"
           f"Pattern: {a.get('pattern','-')}\n"
           f"Faktorok: {a.get('reason','-')}")
 
