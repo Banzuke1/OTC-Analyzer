@@ -65,8 +65,8 @@ def adx(c,n=14):
     return sum(dx_values[-n:])/min(n,len(dx_values)) if dx_values else 0.0
 
 def quality_label(v):
-    if v>=25:return "MAGAS"
-    if v>=18:return "KÖZEPES"
+    if v>=27:return "MAGAS"
+    if v>=20:return "KÖZEPES"
     return "ALACSONY"
 
 def _ema_series(vals,n):
@@ -97,6 +97,18 @@ def bollinger(closes,n=20,mult=2.0):
     var=sum((x-mid)**2 for x in window)/n
     sd=var**0.5
     return mid-mult*sd, mid, mid+mult*sd
+
+def aggregate_candles(candles, group=3):
+    """N gyertyát eggyé von össze -> szintetikus hosszabb idősík,
+    a háttérben, a chart-váltás nélkül is elérhető többidősíkos
+    megerősítéshez."""
+    out=[]
+    for i in range(0, len(candles)-group+1, group):
+        chunk=candles[i:i+group]
+        o=chunk[0][0]; cl=chunk[-1][3]
+        h=max(x[1] for x in chunk); l=min(x[2] for x in chunk)
+        out.append((o,h,l,cl))
+    return out
 
 def support(c,n=30):
     return min(x[2] for x in c[-n:]) if c else 0
@@ -131,8 +143,8 @@ def analyze(c):
     else:score-=12;reasons.append("EMA9<EMA21");down_votes+=1
     if e21>e50:score+=10;reasons.append("középtáv UP");up_votes+=1
     else:score-=10;reasons.append("középtáv DOWN");down_votes+=1
-    if rr>55:score+=10;reasons.append("RSI bullish");up_votes+=1
-    elif rr<45:score-=10;reasons.append("RSI bearish");down_votes+=1
+    if rr>58:score+=10;reasons.append("RSI bullish");up_votes+=1
+    elif rr<42:score-=10;reasons.append("RSI bearish");down_votes+=1
     if macd_h>0:score+=8;reasons.append("MACD bullish");up_votes+=1
     elif macd_h<0:score-=8;reasons.append("MACD bearish");down_votes+=1
     if stoch_k>stoch_d and stoch_k<80:score+=6;reasons.append("Stoch bullish");up_votes+=1
@@ -376,6 +388,17 @@ class AppUI(BoxLayout):
             closed=candles[:-1]
             forming=candles[-1]
         a=analyze(closed)
+
+        # Többidősíkos megerősítés: szintetikus, hosszabb idősík a
+        # meglévő adatokból - nem kell chartot váltani hozzá.
+        if a["direction"] in ("UP","DOWN"):
+            higher=aggregate_candles(closed, group=3)
+            a_higher=analyze(higher)
+            a["higher_tf"]=a_higher["direction"]
+            if a_higher["direction"]!="WAIT" and a_higher["direction"]!=a["direction"]:
+                a["direction"]="WAIT"
+                a["reason"]+=", de a hosszabb (szintetikus) idősík ellentétes irányba mutat"
+
         if forming and a["direction"] in ("UP","DOWN"):
             fo,fh,fl,fc=forming
             forming_dir="UP" if fc>fo else "DOWN" if fc<fo else "WAIT"
