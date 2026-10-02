@@ -132,9 +132,9 @@ def analyze(c):
     if len(c)<20:return {"direction":"WAIT","score":50,"confidence":50,"reason":"Kevés adat","adx":0,"quality":"ALACSONY","pattern":"n/a"}
     closes=[x[3] for x in c]
     e9,e21,e50=ema(closes,9),ema(closes,21),ema(closes,50)
-    rr=rsi(closes); aa=atr(c); adxv=adx(c)
-    macd_l,macd_s,macd_h=macd(closes)
-    stoch_k,stoch_d=stochastic(c)
+    rr=rsi(closes,7); aa=atr(c); adxv=adx(c)
+    macd_l,macd_s,macd_h=macd(closes,6,13,5)
+    stoch_k,stoch_d=stochastic(c,5,3)
     mom=(closes[-1]-closes[-5])/max(abs(closes[-5]),1e-9)*100
     s=resistance(c); sup=support(c); last=closes[-1]
     score=50; reasons=[]; up_votes=0; down_votes=0
@@ -143,8 +143,8 @@ def analyze(c):
     else:score-=12;reasons.append("EMA9<EMA21");down_votes+=1
     if e21>e50:score+=10;reasons.append("középtáv UP");up_votes+=1
     else:score-=10;reasons.append("középtáv DOWN");down_votes+=1
-    if rr>58:score+=10;reasons.append("RSI bullish");up_votes+=1
-    elif rr<42:score-=10;reasons.append("RSI bearish");down_votes+=1
+    if rr>65:score+=10;reasons.append("RSI bullish");up_votes+=1
+    elif rr<35:score-=10;reasons.append("RSI bearish");down_votes+=1
     if macd_h>0:score+=8;reasons.append("MACD bullish");up_votes+=1
     elif macd_h<0:score-=8;reasons.append("MACD bearish");down_votes+=1
     if stoch_k>stoch_d and stoch_k<80:score+=6;reasons.append("Stoch bullish");up_votes+=1
@@ -162,19 +162,21 @@ def analyze(c):
         reasons.append("erős trend (ADX magas)")
     score=max(0,min(100,round(score)))
 
-    if score>=60 and up_votes>=down_votes+2:
+    quality=quality_label(adxv)
+    required_margin={"MAGAS":2,"KÖZEPES":3,"ALACSONY":4}[quality]
+    if score>=60 and up_votes>=down_votes+required_margin:
         direction="UP"
-    elif score<=40 and down_votes>=up_votes+2:
+    elif score<=40 and down_votes>=up_votes+required_margin:
         direction="DOWN"
     else:
         direction="WAIT"
         if score>=60 or score<=40:
-            reasons.append("nincs elég megerősítés (ellentmondó mutatók)")
+            reasons.append(f"nincs elég megerősítés ({quality.lower()} piacnál {required_margin} kellene)")
 
     return {"direction":direction,"score":score,"confidence":abs(score-50)*2,
             "ema":(e9,e21,e50),"rsi":rr,"momentum":mom,"atr":aa,"adx":adxv,
             "macd":macd_h,"stoch_k":stoch_k,"stoch_d":stoch_d,
-            "quality":quality_label(adxv),"votes":f"{up_votes}▲/{down_votes}▼",
+            "quality":quality,"votes":f"{up_votes}▲/{down_votes}▼",
             "support":sup,"resistance":s,"pattern":p,"reason":", ".join(reasons)}
 
 SIGNAL_COLORS = {
@@ -389,23 +391,23 @@ class AppUI(BoxLayout):
             forming=candles[-1]
         a=analyze(closed)
 
-        # Többidősíkos megerősítés: szintetikus, hosszabb idősík a
-        # meglévő adatokból - nem kell chartot váltani hozzá.
         if a["direction"] in ("UP","DOWN"):
             higher=aggregate_candles(closed, group=3)
             a_higher=analyze(higher)
             a["higher_tf"]=a_higher["direction"]
-            if a_higher["direction"]!="WAIT" and a_higher["direction"]!=a["direction"]:
-                a["direction"]="WAIT"
-                a["reason"]+=", de a hosszabb (szintetikus) idősík ellentétes irányba mutat"
+            if a_higher["direction"]==a["direction"]:
+                a["reason"]+=", hosszabb idősík is megerősíti"
+            elif a_higher["direction"]!="WAIT":
+                a["reason"]+=", de a hosszabb idősík egyelőre ellentétes (óvatosan!)"
 
         if forming and a["direction"] in ("UP","DOWN"):
             fo,fh,fl,fc=forming
             forming_dir="UP" if fc>fo else "DOWN" if fc<fo else "WAIT"
             a["forming_bias"]=forming_dir
-            if forming_dir!="WAIT" and forming_dir!=a["direction"]:
-                a["direction"]="WAIT"
-                a["reason"]+=", de a jelenlegi (nyitott) gyertya ellenkező irányba mozog"
+            if forming_dir==a["direction"]:
+                a["reason"]+=", a jelenlegi gyertya is ebbe az irányba mozog"
+            elif forming_dir!="WAIT":
+                a["reason"]+=", de a jelenlegi gyertya pillanatnyilag ellenkező irányba mozog"
         self.last=a
         if self.overlay and self.overlay._visible:
             self.overlay.update(a["direction"], a["score"], a.get("quality","-"),
@@ -426,7 +428,7 @@ class AppUI(BoxLayout):
         self.out.text=(f"ADATFORRÁS: {self.source}  ({len(self.c)} gyertya)\n"
           f"SCORE: {a['score']}/100  |  CONFIDENCE: {a['confidence']}%  |  SZAVAZATOK: {a.get('votes','-')}\n"
           f"MINŐSÉG: {a.get('quality','-')}  |  ADX: {a.get('adx',0):.1f}\n"
-          f"RSI(14): {a.get('rsi',50):.1f}  |  MACD hist: {a.get('macd',0):.5f}\n"
+          f"RSI(7): {a.get('rsi',50):.1f}  |  MACD hist: {a.get('macd',0):.5f}\n"
           f"Stoch K/D: {a.get('stoch_k',50):.1f}/{a.get('stoch_d',50):.1f}  |  Momentum: {a.get('momentum',0):.3f}%\n"
           f"Pattern: {a.get('pattern','-')}\n"
           f"Faktorok: {a.get('reason','-')}")
