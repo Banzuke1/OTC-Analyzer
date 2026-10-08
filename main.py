@@ -12,7 +12,7 @@ from kivy.graphics import Color, Rectangle
 import crash_logger
 crash_logger.install()
 
-from chart_adapter import extract_candles
+from chart_adapter import extract_candles, rightmost_price_y, compute_velocity
 from roi_selector import ROISelector, load_roi, save_roi
 try:
     from android_capture import ScreenCapture, ANDROID
@@ -22,6 +22,11 @@ try:
     from overlay import FloatingSignal
 except Exception:
     FloatingSignal = None
+
+# Pillanatnyi sebesség mérése (Elemzés gombnál)
+BURST_COUNT = 6          # ennyi képkockát próbál bekapni
+BURST_INTERVAL = 0.25    # mp a kockák között
+VELOCITY_MAX_AGE = 15.0  # mp - ennél régebbi sebesség-adatot nem használunk
 
 
 def ema(x,n):
@@ -131,10 +136,11 @@ def pattern(c):
 def analyze(c):
     if len(c)<20:return {"direction":"WAIT","score":50,"confidence":50,"reason":"Kevés adat","adx":0,"quality":"ALACSONY","pattern":"n/a"}
     closes=[x[3] for x in c]
-    e9,e21,e50=ema(closes,9),ema(closes,21),ema(closes,50)
+    e9,e21,e50=ema(closes,5),ema(closes,10),ema(closes,21)
     rr=rsi(closes,7); aa=atr(c); adxv=adx(c)
     macd_l,macd_s,macd_h=macd(closes,6,13,5)
-    stoch_k,stoch_d=stochastic(c,5,3)
+    stoch_k,stoch_d=stochastic(c,14,3)
+    bb_lo,bb_mid,bb_hi=bollinger(closes,20,2.0)
     mom=(closes[-1]-closes[-5])/max(abs(closes[-5]),1e-9)*100
     s=resistance(c); sup=support(c); last=closes[-1]
     score=50; reasons=[]; up_votes=0; down_votes=0
@@ -143,12 +149,14 @@ def analyze(c):
     else:score-=12;reasons.append("EMA9<EMA21");down_votes+=1
     if e21>e50:score+=10;reasons.append("középtáv UP");up_votes+=1
     else:score-=10;reasons.append("középtáv DOWN");down_votes+=1
-    if rr>65:score+=10;reasons.append("RSI bullish");up_votes+=1
-    elif rr<35:score-=10;reasons.append("RSI bearish");down_votes+=1
+    if rr>60:score+=10;reasons.append("RSI bullish");up_votes+=1
+    elif rr<40:score-=10;reasons.append("RSI bearish");down_votes+=1
     if macd_h>0:score+=8;reasons.append("MACD bullish");up_votes+=1
     elif macd_h<0:score-=8;reasons.append("MACD bearish");down_votes+=1
     if stoch_k>stoch_d and stoch_k<80:score+=6;reasons.append("Stoch bullish");up_votes+=1
     elif stoch_k<stoch_d and stoch_k>20:score-=6;reasons.append("Stoch bearish");down_votes+=1
+    if last<=bb_lo:score+=6;reasons.append("ár az alsó Bollinger szalagnál (túladott)");up_votes+=1
+    elif last>=bb_hi:score-=6;reasons.append("ár a felső Bollinger szalagnál (túlvett)");down_votes+=1
     score+=max(-10,min(10,mom*45))
     p=pattern(c)
     if "BULLISH" in p or p=="HAMMER":score+=7;up_votes+=1
@@ -162,6 +170,9 @@ def analyze(c):
         reasons.append("erős trend (ADX magas)")
     score=max(0,min(100,round(score)))
 
+    # Megegyezés-szavazás: a szükséges többség a piac állapotától függ -
+    # erős trendnél elég 2 fő, bizonytalan (gyenge trendű) piacnál 4 fő
+    # kell, hogy tényleg csak az egyértelmű esetekben adjon éles jelet.
     quality=quality_label(adxv)
     required_margin={"MAGAS":2,"KÖZEPES":3,"ALACSONY":4}[quality]
     if score>=60 and up_votes>=down_votes+required_margin:
@@ -193,6 +204,8 @@ class AppUI(BoxLayout):
         self.live=False
         self.source="SZIM"
         self.app_active=True
+        self._last_velocity=("WAIT",0.0)
+        self._vel_ts=0.0
         self._awaiting_roi=False
         self._pending_roi_frame=None
         self.diag_lines=deque(maxlen=7)
@@ -325,12 +338,43 @@ class AppUI(BoxLayout):
         self._msg(f"Figyelés: {len(candles)} gyertya a képen (háttérben gyűjtve)")
 
     def manual_refresh(self):
-        """Az Elemzés gomb hívja (bármelyikről). A háttérben már gyűjtött
-        gyertyákból számol, a legutolsó (még formálódó, lezáratlan)
-        gyertyát kihagyva a stabilabb jel érdekében."""
+        """Az Elemzés gomb hívja (bármelyikről). Élő módban gyors
+        sorozatfelvételt indít (capture_burst): a legutolsó kockából friss
+        gyertyákat olvas, a kockák sorozatából pedig a pillanatnyi
+        ár-sebességet számolja, és csak utána elemez. Egyébként a már
+        gyűjtött adatokból számol."""
         if self.live and self.capture and self.capture.running:
-            self.capture.request_frame()
+            self._msg("Elemzés: sorozatfelvétel indul…")
+            self.capture.capture_burst(BURST_COUNT, BURST_INTERVAL, self._on_burst)
+            return
+        self._last_velocity=("WAIT",0.0)
         self.compute()
+        Clock.schedule_once(lambda dt: self._refresh_widgets())
+
+    def _on_burst(self, frames):
+        """A sorozatfelvétel háttérszálából hívódik. A compute() DIREKT innen
+        fut (nem Kivy Clock-on át), mert az app háttérben (Pocket Option
+        előtérben) a Kivy ciklus szünetelhet, az overlay viszont így is
+        frissül. Csak a Kivy widget-frissítés megy Clock-on át."""
+        n=len(frames)
+        try:
+            if n:
+                candles=extract_candles(frames[-1], roi=self.roi)
+                if candles:
+                    self.c=deque(candles, maxlen=300)
+            ys=[rightmost_price_y(f, roi=self.roi) for f in frames]
+            vdir,vmag=compute_velocity(ys)
+            valid=len([y for y in ys if y is not None])
+            self._last_velocity=(vdir,vmag)
+            self._vel_ts=time.time()
+            self._msg(f"Sebesség: {vdir} {vmag:.4f} ({n} új kocka, {valid} érvényes)")
+        except Exception:
+            crash_logger.log_exception("burst feldolgozás")
+            self._last_velocity=("WAIT",0.0)
+        try:
+            self.compute()
+        except Exception:
+            crash_logger.log_exception("compute (burst után)")
         Clock.schedule_once(lambda dt: self._refresh_widgets())
 
     # ---------- terület kijelölés ----------
@@ -380,17 +424,22 @@ class AppUI(BoxLayout):
 
     # ---------- elemzés ----------
     def compute(self):
-        """A trendet a LEZÁRT gyertyákból számoljuk (stabil), de a most
-        formálódó gyertyát megerősítésként megnézzük: ha az ellentétesen
-        mozog a trenddel, WAIT-re váltunk - így a legfrissebb mozgás is
-        számít, de nem villogtatja a jelet."""
+        """A trendet a LEZÁRT gyertyákból számoljuk (stabil). Három kemény
+        kapu védi a jelet - bármelyik ellentmondása VÁRAKOZÁS-ra vált:
+        1) hosszabb (szintetikus) idősík, 2) a most formálódó gyertya
+        iránya, 3) a pillanatnyi ár-sebesség (csak élő módban, frissen
+        mért sebességnél). Az, hogy melyik kapu blokkolt, a naplóba is
+        bekerül."""
         candles=list(self.c)
         closed=candles; forming=None
         if self.source=="ÉLŐ" and len(candles)>21:
             closed=candles[:-1]
             forming=candles[-1]
         a=analyze(closed)
+        a["pre_gate"]=a["direction"]
+        a["blocked_by"]=""
 
+        # 1) Többidősíkos kapu
         if a["direction"] in ("UP","DOWN"):
             higher=aggregate_candles(closed, group=3)
             a_higher=analyze(higher)
@@ -398,8 +447,11 @@ class AppUI(BoxLayout):
             if a_higher["direction"]==a["direction"]:
                 a["reason"]+=", hosszabb idősík is megerősíti"
             elif a_higher["direction"]!="WAIT":
-                a["reason"]+=", de a hosszabb idősík egyelőre ellentétes (óvatosan!)"
+                a["direction"]="WAIT"
+                a["blocked_by"]="higher_tf"
+                a["reason"]+=", de a hosszabb idősík ellentétes irányba mutat"
 
+        # 2) Formálódó gyertya kapu
         if forming and a["direction"] in ("UP","DOWN"):
             fo,fh,fl,fc=forming
             forming_dir="UP" if fc>fo else "DOWN" if fc<fo else "WAIT"
@@ -407,11 +459,27 @@ class AppUI(BoxLayout):
             if forming_dir==a["direction"]:
                 a["reason"]+=", a jelenlegi gyertya is ebbe az irányba mozog"
             elif forming_dir!="WAIT":
-                a["reason"]+=", de a jelenlegi gyertya pillanatnyilag ellenkező irányba mozog"
+                a["direction"]="WAIT"
+                a["blocked_by"]="forming"
+                a["reason"]+=", de a jelenlegi gyertya ellenkező irányba mozog"
+
+        # 3) Pillanatnyi ár-sebesség kapu (csak friss mérésnél)
+        vdir,vmag=self._last_velocity
+        fresh=(time.time()-self._vel_ts)<VELOCITY_MAX_AGE
+        a["velocity"]=(vdir,vmag) if (self.source=="ÉLŐ" and fresh) else ("WAIT",0.0)
+        if self.source=="ÉLŐ" and fresh and a["direction"] in ("UP","DOWN"):
+            if vdir==a["direction"]:
+                a["reason"]+=", a pillanatnyi ármozgás is megerősíti"
+            elif vdir!="WAIT":
+                a["direction"]="WAIT"
+                a["blocked_by"]="velocity"
+                a["reason"]+=", de a pillanatnyi ármozgás ellentétes"
+
         self.last=a
         if self.overlay and self.overlay._visible:
+            arrow={"UP":"↑","DOWN":"↓","WAIT":"–"}[a["velocity"][0]]
             self.overlay.update(a["direction"], a["score"], a.get("quality","-"),
-                                a.get("pattern","-"), f"{self.source} {len(closed)}+1db")
+                                a.get("pattern","-"), f"{self.source} {len(closed)}+1db v{arrow}")
         return a
 
     def run(self,*_):
@@ -425,11 +493,13 @@ class AppUI(BoxLayout):
             return
         self._sig_color.rgba=SIGNAL_COLORS.get(a["direction"], SIGNAL_COLORS["WAIT"])
         self.signal_label.text={"UP":"BUY / UP","DOWN":"SELL / DOWN","WAIT":"VÁRAKOZÁS"}[a["direction"]]
+        vd,vm=a.get("velocity",("WAIT",0.0))
         self.out.text=(f"ADATFORRÁS: {self.source}  ({len(self.c)} gyertya)\n"
           f"SCORE: {a['score']}/100  |  CONFIDENCE: {a['confidence']}%  |  SZAVAZATOK: {a.get('votes','-')}\n"
           f"MINŐSÉG: {a.get('quality','-')}  |  ADX: {a.get('adx',0):.1f}\n"
           f"RSI(7): {a.get('rsi',50):.1f}  |  MACD hist: {a.get('macd',0):.5f}\n"
           f"Stoch K/D: {a.get('stoch_k',50):.1f}/{a.get('stoch_d',50):.1f}  |  Momentum: {a.get('momentum',0):.3f}%\n"
+          f"Sebesség: {vd} ({vm:.4f})  |  Blokkolta: {a.get('blocked_by') or '-'}\n"
           f"Pattern: {a.get('pattern','-')}\n"
           f"Faktorok: {a.get('reason','-')}")
 
@@ -442,14 +512,23 @@ class AppUI(BoxLayout):
 
     def mark(self,result):
         if not self.last:return
-        path=os.path.join(self._data_dir,"signal_log.csv")
+        # új, bővebb napló (a régi signal_log.csv érintetlen marad)
+        path=os.path.join(self._data_dir,"signal_log_v2.csv")
         exists=os.path.exists(path)
+        a=self.last
+        vd,vm=a.get("velocity",("WAIT",0.0))
         with open(path,"a",newline="",encoding="utf-8") as f:
             w=csv.writer(f)
-            if not exists:w.writerow(["timestamp","source","direction","score","rsi","adx","quality","pattern","result"])
-            a=self.last
-            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),self.source,a["direction"],a["score"],
-                        round(a.get("rsi",50),2),round(a.get("adx",0),2),a.get("quality",""),a.get("pattern",""),result])
+            if not exists:
+                w.writerow(["timestamp","source","direction","pre_gate","blocked_by","score","confidence",
+                            "votes","rsi","adx","quality","pattern","macd","stoch_k","momentum",
+                            "higher_tf","forming_bias","vel_dir","vel_mag","result"])
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"),self.source,a["direction"],
+                        a.get("pre_gate",""),a.get("blocked_by",""),a["score"],a.get("confidence",""),
+                        a.get("votes",""),round(a.get("rsi",50),2),round(a.get("adx",0),2),
+                        a.get("quality",""),a.get("pattern",""),round(a.get("macd",0),6),
+                        round(a.get("stoch_k",50),1),round(a.get("momentum",0),4),
+                        a.get("higher_tf",""),a.get("forming_bias",""),vd,round(vm,5),result])
         self.note.text=f"Eredmény elmentve: {result}"
 
 
