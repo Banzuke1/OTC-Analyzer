@@ -1,7 +1,8 @@
 """
 Élő képernyőrögzítés Androidon (MediaProjection + pyjnius).
-Android 14+ követelmények: előtér-szolgáltatás (mediaProjection típus),
-és a MediaProjection.Callback regisztrálása a virtuális kijelző előtt.
+Android 14+ követelmények: előtér-szolgáltatás (mediaProjection típus).
+(android.api=33 alatt a MediaProjection.Callback regisztrálás nem kötelező,
+ezért a korábbi Cb osztály ki lett véve.)
 Minden lépés státuszüzenetet ír (messages), hogy látható legyen, hol akad el.
 """
 import io, threading, time, traceback
@@ -38,10 +39,12 @@ class ScreenCapture:
         self._projection = None
         self._virtual_display = None
         self._image_reader = None
-        self._callback = None   # referenciák megtartása (GC ellen)
-        self._handler = None
         self._wake = threading.Event()
         self._frames = 0
+        self._w = None
+        self._h = None
+        self._burst_lock = threading.Lock()
+        self._grab_lock = threading.Lock()
         if ANDROID:
             activity.bind(on_activity_result=self._on_activity_result)
 
@@ -111,18 +114,6 @@ class ScreenCapture:
             self._projection = proj
             self._status("MediaProjection kész.")
 
-            # Android 14+: callback regisztrálása kötelező
-            try:
-                Handler = autoclass('android.os.Handler')
-                Looper = autoclass('android.os.Looper')
-                self._handler = Handler(Looper.getMainLooper())
-                Cb = autoclass('org.otcanalyzer.Cb')
-                self._callback = Cb()
-                proj.registerCallback(self._callback, self._handler)
-                self._status("Callback regisztrálva.")
-            except Exception:
-                self._log("registerCallback")
-
             DisplayMetrics = autoclass('android.util.DisplayMetrics')
             ImageReader = autoclass('android.media.ImageReader')
             PixelFormat = autoclass('android.graphics.PixelFormat')
@@ -136,6 +127,7 @@ class ScreenCapture:
                 "otc_capture", w, h, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 self._image_reader.getSurface(), None, None)
+            self._w, self._h = w, h
             self._status(f"Virtuális kijelző kész ({w}x{h}).")
             self.running = True
             threading.Thread(target=self._loop, args=(w, h, gen), daemon=True).start()
@@ -144,6 +136,11 @@ class ScreenCapture:
 
     # ---------- képkocka ----------
     def _grab(self, w, h):
+        # a háttérciklus és a sorozatfelvétel ne férjen egyszerre az ImageReaderhez
+        with self._grab_lock:
+            return self._grab_locked(w, h)
+
+    def _grab_locked(self, w, h):
         from PIL import Image
         img = self._image_reader.acquireLatestImage()
         if img is None:
@@ -187,6 +184,36 @@ class ScreenCapture:
                 self._log("frame")
             self._wake.wait(self.interval)
             self._wake.clear()
+
+    # ---------- gyors sorozatfelvétel (pillanatnyi sebesség méréséhez) ----------
+    def capture_burst(self, count, interval, callback):
+        """count db képkockát kapkod be gyorsan egymás után (interval mp
+        különbséggel), majd egyben átadja a callbacknek. Csak az ÚJ
+        képkockákat adja át (ha nem érkezett új, az adott kört kihagyja),
+        így a lista hossza = tényleg különböző képkockák száma."""
+        if not self.running or self._w is None:
+            self._status("Burst: nincs aktív rögzítés.")
+            if callback:
+                callback([])
+            return
+
+        def _burst():
+            frames = []
+            with self._burst_lock:
+                for _ in range(count):
+                    if not self.running:
+                        break
+                    try:
+                        im = self._grab(self._w, self._h)
+                        if im is not None:
+                            frames.append(im)
+                    except Exception:
+                        self._log("burst")
+                    time.sleep(interval)
+            if callback:
+                callback(frames)
+
+        threading.Thread(target=_burst, daemon=True).start()
 
     # ---------- leállítás ----------
     def stop(self):
