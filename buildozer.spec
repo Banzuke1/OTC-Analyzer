@@ -1,6 +1,6 @@
 [app]
-title = OTC Analyzer 2
-package.name = otcanalyzer2
+title = OTC Analyzer 3
+package.name = otcanalyzer3
 package.domain = org.otcanalyzer
 source.dir = .
 source.include_exts = py,png,jpg,json,csv,kv
